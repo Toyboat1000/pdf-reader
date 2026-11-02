@@ -16,12 +16,15 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QSlider,
     QToolBar,
     QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
 
 from pdf_reader.config.constants import APP_NAME, APP_VERSION, PROJECT_URL
@@ -29,11 +32,14 @@ from pdf_reader.config.paths import logs_dir, models_dir
 from pdf_reader.config.settings import MAX_SPEED, MIN_SPEED, Settings, save_settings
 from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.session import ReadingSession, ReadingState
+from pdf_reader.library import Bookmark
 from pdf_reader.tts.base import Voice
+from pdf_reader.ui.bookmarks_panel import BookmarksPanel
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.document_view import DocumentView
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
 from pdf_reader.ui.icons import Glyph, make_icon
+from pdf_reader.ui.resume_banner import ResumeBanner
 from pdf_reader.ui.text_dialog import TextInputDialog
 
 log = logging.getLogger(__name__)
@@ -75,8 +81,17 @@ class MainWindow(QMainWindow):
         self.resize(1000, 760)
         self.setMinimumSize(QSize(640, 420))
 
-        self._view = DocumentView(self)
-        self.setCentralWidget(self._view)
+        self._view = DocumentView()
+        self._banner = ResumeBanner()
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self._banner)
+        central_layout.addWidget(self._view, 1)
+        self.setCentralWidget(central)
+        self._bookmarks_panel = BookmarksPanel(self)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._bookmarks_panel)
 
         self._create_actions()
         self._create_menus()
@@ -180,6 +195,17 @@ class MainWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir())))
         )
 
+        self._add_bookmark_action = QAction(make_icon(Glyph.BOOKMARK, self), "&Add Bookmark", self)
+        self._add_bookmark_action.setShortcut(QKeySequence("Ctrl+B"))
+        self._add_bookmark_action.setToolTip("Bookmark the current sentence (Ctrl+B)")
+        self._add_bookmark_action.triggered.connect(self._add_bookmark)
+
+        self._show_bookmarks_action = self._bookmarks_panel.toggleViewAction()
+        self._show_bookmarks_action.setText("Show &Bookmarks Panel")
+        self._show_bookmarks_action.setIcon(make_icon(Glyph.BOOKMARKS, self))
+        self._show_bookmarks_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
+        self._show_bookmarks_action.setToolTip("Show or hide your bookmarks (Ctrl+Shift+B)")
+
         self._about_action = QAction(f"&About {APP_NAME}", self)
         self._about_action.triggered.connect(self._show_about)
 
@@ -192,6 +218,9 @@ class MainWindow(QMainWindow):
         bar = self.menuBar()
         file_menu = bar.addMenu("&File")
         file_menu.addAction(self._open_action)
+        self._recent_menu = file_menu.addMenu("Open &Recent")
+        self._recent_menu.setToolTipsVisible(True)
+        self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
         file_menu.addSeparator()
         file_menu.addAction(self._new_text_action)
         file_menu.addAction(self._paste_action)
@@ -205,6 +234,10 @@ class MainWindow(QMainWindow):
         playback.addSeparator()
         playback.addAction(self._prev_action)
         playback.addAction(self._next_action)
+
+        bookmarks_menu = bar.addMenu("&Bookmarks")
+        bookmarks_menu.addAction(self._add_bookmark_action)
+        bookmarks_menu.addAction(self._show_bookmarks_action)
 
         help_menu = bar.addMenu("&Help")
         help_menu.addAction(self._download_action)
@@ -223,6 +256,9 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._open_action)
         toolbar.addAction(self._new_text_action)
         toolbar.addAction(self._paste_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self._add_bookmark_action)
+        toolbar.addAction(self._show_bookmarks_action)
         toolbar.addSeparator()
         toolbar.addAction(self._prev_action)
         toolbar.addAction(self._play_action)
@@ -282,6 +318,14 @@ class MainWindow(QMainWindow):
         b.document_error.connect(self._on_document_error)
         b.position_changed.connect(self._on_position_changed)
         b.playback_error.connect(self._on_playback_error)
+        b.resumed.connect(self._on_resumed)
+        b.bookmarks_changed.connect(self._on_bookmarks_changed)
+        self._banner.start_over.connect(lambda: self._session.seek(0, play=False))
+        panel = self._bookmarks_panel
+        panel.add_requested.connect(self._add_bookmark)
+        panel.jump_requested.connect(self._session.go_to_bookmark)
+        panel.rename_requested.connect(self._rename_bookmark)
+        panel.remove_requested.connect(self._session.remove_bookmark)
         self._view.sentence_clicked.connect(lambda index: self._session.seek(index, play=True))
         self._speed_slider.valueChanged.connect(self._on_speed_slider)
         self._voice_combo.activated.connect(self._on_voice_chosen)
@@ -350,7 +394,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------ session events
 
     @Slot(object)
-    def _on_state_changed(self, _state: ReadingState) -> None:
+    def _on_state_changed(self, state: ReadingState) -> None:
+        if state is ReadingState.PLAYING:
+            self._banner.hide()  # Reading on means the user accepted where it resumed.
         self._update_controls()
 
     @Slot(list, str)
@@ -385,10 +431,67 @@ class MainWindow(QMainWindow):
     def _on_document_loaded(self, document: ReadingDocument) -> None:
         self._document = document
         self._doc_loading_name = None
+        self._banner.hide()
         self._view.set_document(document)
         self.setWindowTitle(f"{document.display_name} - {APP_NAME}")
         self._view.highlight(self._session.position)
         self._update_controls()
+
+    @Slot(int)
+    def _on_resumed(self, index: int) -> None:
+        document = self._document
+        if document is None or not 0 <= index < document.sentence_count:
+            return
+        self._banner.show_resumed(document.page_of(index) if document.is_paginated else None)
+
+    @Slot(list)
+    def _on_bookmarks_changed(self, bookmarks: list[Bookmark]) -> None:
+        paginated = self._document is not None and self._document.is_paginated
+        self._bookmarks_panel.set_bookmarks(bookmarks, show_pages=paginated)
+        self._view.set_bookmarked({b.anchor.index for b in bookmarks})
+
+    # ----------------------------------------------------------- bookmarks
+
+    @Slot()
+    def _add_bookmark(self) -> None:
+        bookmark = self._session.add_bookmark()
+        if bookmark is None:
+            return
+        if self._bookmarks_panel.isHidden():
+            self.statusBar().showMessage(
+                "Bookmark added. Press Ctrl+Shift+B to see your bookmarks.", 4000
+            )
+
+    @Slot(str)
+    def _rename_bookmark(self, bookmark_id: str) -> None:
+        bookmark = next((b for b in self._session.bookmarks() if b.id == bookmark_id), None)
+        if bookmark is None:
+            return
+        label, accepted = QInputDialog.getText(
+            self, "Rename Bookmark", "Bookmark name:", text=bookmark.label
+        )
+        if accepted and label.strip():
+            self._session.rename_bookmark(bookmark_id, label)
+
+    @Slot()
+    def _fill_recent_menu(self) -> None:
+        menu = self._recent_menu
+        menu.clear()
+        records = self._session.recent_documents()
+        if not records:
+            menu.addAction("No recent documents").setEnabled(False)
+            return
+        for record in records:
+            if record.path is None:
+                continue
+            path = Path(record.path)
+            action = menu.addAction(path.name)
+            action.setToolTip(str(path))
+            if path.is_file():
+                action.triggered.connect(lambda _checked=False, p=path: self.open_file(p))
+            else:
+                action.setText(f"{path.name} (not found)")
+                action.setEnabled(False)
 
     @Slot(object, str)
     def _on_document_error(self, path: Path | None, message: str) -> None:
@@ -455,6 +558,9 @@ class MainWindow(QMainWindow):
         self._play_action.setIcon(self._pause_icon if playing else self._play_icon)
         self._play_action.setText("&Pause" if playing else "&Play")
         self._stop_action.setEnabled(state in (ReadingState.PLAYING, ReadingState.PAUSED))
+        can_bookmark = self._session.can_bookmark and state is not ReadingState.LOADING
+        self._add_bookmark_action.setEnabled(can_bookmark)
+        self._bookmarks_panel.set_can_add(can_bookmark)
         self._edit_text_action.setEnabled(
             self._document is not None
             and self._document.text is not None
@@ -512,12 +618,16 @@ class MainWindow(QMainWindow):
         )
 
     def _restore_geometry(self) -> None:
-        if self._settings.window_geometry:
-            try:
-                data = QByteArray.fromHex(self._settings.window_geometry.encode("ascii"))
-                self.restoreGeometry(data)
-            except (UnicodeEncodeError, ValueError):
-                log.warning("Ignoring invalid saved window geometry")
+        try:
+            if self._settings.window_geometry:
+                self.restoreGeometry(
+                    QByteArray.fromHex(self._settings.window_geometry.encode("ascii"))
+                )
+            if self._settings.window_state:
+                self.restoreState(QByteArray.fromHex(self._settings.window_state.encode("ascii")))
+        except (UnicodeEncodeError, ValueError):
+            log.warning("Ignoring invalid saved window layout")
+        self._bookmarks_panel.setVisible(self._settings.show_bookmarks)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Save settings and stop audio and background work before closing."""
@@ -525,6 +635,8 @@ class MainWindow(QMainWindow):
             self._shut_down = True
             self._speed_timer.stop()
             self._settings.window_geometry = bytes(self.saveGeometry().toHex().data()).decode()
+            self._settings.window_state = bytes(self.saveState().toHex().data()).decode()
+            self._settings.show_bookmarks = not self._bookmarks_panel.isHidden()
             self._settings.speed = self._speed_slider.value() / 100
             save_settings(self._settings, self._settings_path)
             self._session.shutdown()

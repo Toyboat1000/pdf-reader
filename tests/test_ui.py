@@ -15,6 +15,7 @@ from pdf_reader.audio.playback import PlaybackController
 from pdf_reader.audio.player import AudioPlayer, PlayerListener
 from pdf_reader.config.settings import Settings
 from pdf_reader.core.session import ReadingSession, ReadingState
+from pdf_reader.library import LibraryStore
 from pdf_reader.tts.download import RemoteFile
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
@@ -34,8 +35,8 @@ def make_pdf(path: Path) -> Path:
     return path
 
 
-@pytest.fixture
-def window(qtbot: QtBot, tmp_path: Path) -> Iterator[MainWindow]:
+def make_window(qtbot: QtBot, tmp_path: Path, settings: Settings | None = None) -> MainWindow:
+    """Create a started window with a fake engine and a library in ``tmp_path``."""
     factory = StreamFactory()
 
     def controller_factory(*args: Any, **kwargs: Any) -> PlaybackController:
@@ -46,14 +47,26 @@ def window(qtbot: QtBot, tmp_path: Path) -> Iterator[MainWindow]:
 
     bridge = SessionBridge()
     session = ReadingSession(
-        FakeEngine(), bridge, voice="am_adam", speed=1.25, controller_factory=controller_factory
+        FakeEngine(),
+        bridge,
+        voice="am_adam",
+        speed=1.25,
+        library=LibraryStore(tmp_path / "library.json"),
+        controller_factory=controller_factory,
     )
-    win = MainWindow(session, bridge, Settings(voice="am_adam", speed=1.25), tmp_path / "s.json")
+    settings = settings or Settings(voice="am_adam", speed=1.25)
+    win = MainWindow(session, bridge, settings, tmp_path / "s.json")
     qtbot.addWidget(win)
     win.show()
     win.start()
     # The voice list is filled by a queued signal that can arrive just after READY.
     qtbot.waitUntil(lambda: session.state is ReadingState.READY and win._voice_combo.count() > 0)
+    return win
+
+
+@pytest.fixture
+def window(qtbot: QtBot, tmp_path: Path) -> Iterator[MainWindow]:
+    win = make_window(qtbot, tmp_path)
     yield win
     win.close()
 
@@ -304,3 +317,127 @@ def test_text_shortcuts(window: MainWindow) -> None:
     assert window._new_text_action.shortcut() == QKeySequence(QKeySequence.StandardKey.New)
     assert window._paste_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Paste)
     assert window._edit_text_action.shortcut() == QKeySequence("Ctrl+E")
+
+
+# ------------------------------------------------------------------ bookmarks
+
+
+def test_add_bookmark_shows_in_panel_and_text(
+    qtbot: QtBot, window: MainWindow, tmp_path: Path
+) -> None:
+    open_sample(qtbot, window, tmp_path)
+    assert window._add_bookmark_action.isEnabled()
+    window._session.seek(2, play=False)
+    window._add_bookmark_action.trigger()
+    qtbot.waitUntil(lambda: window._bookmarks_panel.ids() != [])
+    assert window._view.bookmarked == {2}
+    item = window._bookmarks_panel._list.item(0)
+    assert item.text() == "Page 0 sentence 2.\nPage 1"
+    assert window.statusBar().currentMessage().startswith("Bookmark added")
+
+
+def test_bookmark_panel_actions(
+    qtbot: QtBot, window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    open_sample(qtbot, window, tmp_path)
+    window._session.seek(4, play=False)
+    window._add_bookmark_action.trigger()
+    qtbot.waitUntil(lambda: len(window._bookmarks_panel.ids()) == 1)
+    (bookmark_id,) = window._bookmarks_panel.ids()
+    panel = window._bookmarks_panel
+    panel._list.setCurrentRow(0)
+
+    monkeypatch.setattr(
+        "pdf_reader.ui.main_window.QInputDialog.getText",
+        lambda *_args, **_kwargs: ("Chapter start", True),
+    )
+    panel._rename_button.click()
+    qtbot.waitUntil(lambda: panel._list.item(0).text().startswith("Chapter start"))
+
+    window._session.seek(0, play=False)
+    panel._on_activated(panel._list.item(0))
+    assert window._session.position == 4
+
+    panel._list.setCurrentRow(0)
+    panel._remove_button.click()
+    qtbot.waitUntil(lambda: panel.ids() == [])
+    assert window._view.bookmarked == set()
+    assert bookmark_id not in panel.ids()
+
+
+def test_bookmarks_disabled_for_pasted_text(
+    qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    accept_dialog_with(monkeypatch, "Some pasted text. More text.")
+    window._new_text_action.trigger()
+    qtbot.waitUntil(lambda: window._document is not None)
+    assert not window._add_bookmark_action.isEnabled()
+    assert not window._bookmarks_panel._add_button.isEnabled()
+
+
+def test_bookmarks_panel_toggle_is_saved(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> None:
+    assert window._bookmarks_panel.isHidden()
+    window._show_bookmarks_action.trigger()
+    assert not window._bookmarks_panel.isHidden()
+    window.close()
+    saved = json.loads((tmp_path / "s.json").read_text(encoding="utf-8"))
+    assert saved["show_bookmarks"] is True
+    assert saved["window_state"]
+
+
+# --------------------------------------------------------------------- resume
+
+
+def test_reopening_shows_resume_banner(qtbot: QtBot, tmp_path: Path) -> None:
+    first = make_window(qtbot, tmp_path)
+    open_sample(qtbot, first, tmp_path)
+    first._session.seek(4, play=False)
+    first.close()
+
+    second = make_window(qtbot, tmp_path)
+    try:
+        second.open_file(tmp_path / "sample.pdf")
+        qtbot.waitUntil(lambda: second._banner.isVisible())
+        assert second._session.position == 4
+        assert second._banner.message == "Continuing where you left off (page 2)."
+        assert second._sentence_label.text() == "Sentence 5 of 6"
+
+        second._banner.start_over.emit()
+        assert second._session.position == 0
+        qtbot.waitUntil(lambda: second._sentence_label.text() == "Sentence 1 of 6")
+    finally:
+        second.close()
+
+
+def test_banner_hides_when_reading_starts(qtbot: QtBot, tmp_path: Path) -> None:
+    first = make_window(qtbot, tmp_path)
+    open_sample(qtbot, first, tmp_path)
+    first._session.seek(3, play=False)
+    first.close()
+
+    second = make_window(qtbot, tmp_path)
+    try:
+        second.open_file(tmp_path / "sample.pdf")
+        qtbot.waitUntil(lambda: second._banner.isVisible())
+        second._play_action.trigger()
+        qtbot.waitUntil(lambda: not second._banner.isVisible())
+    finally:
+        second.close()
+
+
+def test_open_recent_menu(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> None:
+    window._fill_recent_menu()
+    (empty,) = window._recent_menu.actions()
+    assert not empty.isEnabled()
+
+    open_sample(qtbot, window, tmp_path)
+    window._fill_recent_menu()
+    (entry,) = window._recent_menu.actions()
+    assert entry.text() == "sample.pdf"
+    assert entry.isEnabled()
+
+    (tmp_path / "sample.pdf").unlink()
+    window._fill_recent_menu()
+    (missing,) = window._recent_menu.actions()
+    assert missing.text() == "sample.pdf (not found)"
+    assert not missing.isEnabled()

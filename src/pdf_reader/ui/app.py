@@ -10,9 +10,10 @@ from PySide6.QtWidgets import QApplication
 
 from pdf_reader.config.constants import APP_NAME, APP_VERSION
 from pdf_reader.config.log_setup import configure_logging
-from pdf_reader.config.paths import logs_dir, models_dir, settings_file
+from pdf_reader.config.paths import library_file, logs_dir, models_dir, settings_file
 from pdf_reader.config.settings import load_settings
 from pdf_reader.core.session import ReadingSession
+from pdf_reader.library import LibraryStore
 from pdf_reader.tts.kokoro_engine import KokoroEngine
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.main_window import MainWindow
@@ -42,7 +43,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     settings = load_settings(settings_path)
     bridge = SessionBridge()
     session = ReadingSession(
-        KokoroEngine(models_dir()), bridge, voice=settings.voice, speed=settings.speed
+        KokoroEngine(models_dir()),
+        bridge,
+        voice=settings.voice,
+        speed=settings.speed,
+        library=LibraryStore(library_file()),
     )
     window = MainWindow(session, bridge, settings, settings_path)
     window.show()

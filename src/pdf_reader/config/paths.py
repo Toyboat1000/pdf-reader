@@ -34,6 +34,11 @@ def settings_file(env: Mapping[str, str] | None = None) -> Path:
     return settings_dir(env) / "settings.json"
 
 
+def library_file(env: Mapping[str, str] | None = None) -> Path:
+    """Return the path of the JSON file with reading positions and bookmarks."""
+    return settings_dir(env) / "library.json"
+
+
 def models_dir(env: Mapping[str, str] | None = None) -> Path:
     """Return the folder where downloaded voice models are stored."""
     return local_data_dir(env) / "models"

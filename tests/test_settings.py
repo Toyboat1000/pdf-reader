@@ -22,7 +22,14 @@ def test_missing_file_gives_defaults(tmp_path: Path) -> None:
 
 def test_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "sub" / "settings.json"
-    original = Settings(voice="bm_george", speed=1.35, window_geometry="abcd", last_folder="C:/x")
+    original = Settings(
+        voice="bm_george",
+        speed=1.35,
+        window_geometry="abcd",
+        window_state="ef01",
+        last_folder="C:/x",
+        show_bookmarks=True,
+    )
     save_settings(original, path)
     assert load_settings(path) == original
     assert not path.with_suffix(".json.tmp").exists()
@@ -84,6 +91,7 @@ def test_save_failure_is_logged_not_raised(tmp_path: Path) -> None:
 def test_paths_use_environment() -> None:
     env = {"APPDATA": "C:/Roaming", "LOCALAPPDATA": "C:/Local"}
     assert paths.settings_file(env) == Path("C:/Roaming") / APP_NAME / "settings.json"
+    assert paths.library_file(env) == Path("C:/Roaming") / APP_NAME / "library.json"
     assert paths.models_dir(env) == Path("C:/Local") / APP_NAME / "models"
     assert paths.logs_dir(env) == Path("C:/Local") / APP_NAME / "logs"
 
@@ -91,3 +99,9 @@ def test_paths_use_environment() -> None:
 def test_paths_fall_back_without_environment() -> None:
     assert paths.settings_dir({}) == Path.home() / "AppData" / "Roaming" / APP_NAME
     assert paths.local_data_dir({}) == Path.home() / "AppData" / "Local" / APP_NAME
+
+
+def test_show_bookmarks_must_be_boolean(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"show_bookmarks": "yes"}), encoding="utf-8")
+    assert load_settings(path).show_bookmarks is False

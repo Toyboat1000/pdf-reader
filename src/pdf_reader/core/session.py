@@ -21,12 +21,15 @@ passes through ``LOADING``.
 import logging
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 
 from pdf_reader.audio.playback import PlaybackController, PlaybackListener
 from pdf_reader.config.settings import clamp_speed
 from pdf_reader.core.document import ReadingDocument
+from pdf_reader.library import Anchor, Bookmark, DocumentRecord, LibraryStore
+from pdf_reader.library.anchors import file_id, make_anchor, resolve
 from pdf_reader.pdf import NoTextError, PdfError, load_pdf
 from pdf_reader.text.pipeline import TextPipeline
 from pdf_reader.tts.base import ModelLoadError, TtsEngine, Voice
@@ -100,6 +103,12 @@ class SessionListener:
     def on_playback_error(self, message: str) -> None:
         """Playback stopped because of an error; ``message`` is user-friendly."""
 
+    def on_resumed(self, index: int) -> None:
+        """A reopened document continues at sentence ``index`` (where reading stopped)."""
+
+    def on_bookmarks_changed(self, bookmarks: list[Bookmark]) -> None:
+        """The current document's bookmarks changed (or a document was opened)."""
+
 
 type ControllerFactory = Callable[..., PlaybackController]
 
@@ -115,9 +124,11 @@ class ReadingSession(PlaybackListener):
         voice: str,
         speed: float = 1.0,
         pipeline: TextPipeline | None = None,
+        library: LibraryStore | None = None,
         controller_factory: ControllerFactory = PlaybackController,
     ) -> None:
         self._engine = engine
+        self._library = library
         self._listener = listener
         self._pipeline = pipeline or TextPipeline()
         self._lock = threading.RLock()
@@ -270,7 +281,9 @@ class ReadingSession(PlaybackListener):
                 sentences = tuple(self._pipeline.process_document(document))
                 if not sentences:
                     raise NoTextError(path)
-                result: ReadingDocument | str = ReadingDocument.from_pdf(document, sentences)
+                result: ReadingDocument | str = ReadingDocument.from_pdf(
+                    document, sentences, doc_id=self._document_id(path)
+                )
             except PdfError as exc:
                 result = exc.user_message
             except Exception as exc:
@@ -310,22 +323,77 @@ class ReadingSession(PlaybackListener):
             return self._doc_request
 
     def _finish_open(self, request: int, path: Path | None, result: ReadingDocument | str) -> None:
+        resumed: int | None = None
+        bookmarks: list[Bookmark] = []
         with self._lock:
             if request != self._doc_request:
                 return  # A newer open_document call superseded this one.
             self._doc_loading = False
             if isinstance(result, ReadingDocument):
+                self._remember_position(flush=True)  # For the document being closed.
                 self._document = result
                 self._position = 0
                 self._at_end = False
                 self._controller.set_script(result.sentences)
+                resumed, bookmarks = self._restore(result)
             self._settle()
+            position = self._position
         if isinstance(result, ReadingDocument):
             log.info("Document ready: %d sentences", result.sentence_count)
             self._listener.on_document_loaded(result)
-            self._listener.on_position_changed(0)
+            self._listener.on_position_changed(position)
+            self._listener.on_bookmarks_changed(bookmarks)
+            if resumed is not None:
+                self._listener.on_resumed(resumed)
         else:
             self._listener.on_document_error(path, result)
+
+    def _document_id(self, path: Path) -> str | None:
+        """Identify a file by content, if a library is in use. Runs off the UI thread."""
+        if self._library is None:
+            return None
+        try:
+            return file_id(path)
+        except OSError:
+            log.warning("Could not compute a document id for %s", path, exc_info=True)
+            return None
+
+    def _restore(self, document: ReadingDocument) -> tuple[int | None, list[Bookmark]]:
+        """Load the saved position and bookmarks of a newly opened document.
+
+        Sets the position (without starting playback) and re-anchors bookmarks to the
+        current sentences. Returns the resumed index (if not the start) and the
+        bookmarks.
+        """
+        if self._library is None or document.doc_id is None:
+            return None, []
+        record = self._library.open_document(document.doc_id, document.title, document.path)
+        resumed = None
+        if record.position is not None:
+            index = resolve(record.position, document.sentences)
+            if index > 0:
+                self._position = resumed = index
+                log.info("Resuming %s at sentence %d", document.display_name, index)
+        bookmarks = self._reanchor_bookmarks(record, document)
+        self._library.flush()
+        return resumed, bookmarks
+
+    def _reanchor_bookmarks(
+        self, record: DocumentRecord, document: ReadingDocument
+    ) -> list[Bookmark]:
+        """Point bookmarks at the current sentence indexes, saving any that moved."""
+        assert self._library is not None
+        moved: dict[str, Anchor] = {}
+        bookmarks: list[Bookmark] = []
+        for bookmark in record.bookmarks:
+            anchor = make_anchor(document.sentences, resolve(bookmark.anchor, document.sentences))
+            if anchor != bookmark.anchor:
+                moved[bookmark.id] = anchor
+                bookmark = replace(bookmark, anchor=anchor)
+            bookmarks.append(bookmark)
+        if moved:
+            self._library.set_bookmark_anchors(record.doc_id, moved)
+        return _sorted(bookmarks)
 
     # ----------------------------------------------------------- playback
 
@@ -354,6 +422,7 @@ class ReadingSession(PlaybackListener):
             self._controller.pause()
             self._can_resume = True
             self._transition(ReadingState.PAUSED)
+            self._remember_position(flush=True)
 
     def toggle_play_pause(self) -> None:
         """Pause if reading, otherwise start reading."""
@@ -371,6 +440,7 @@ class ReadingSession(PlaybackListener):
             self._controller.stop()
             self._can_resume = False
             self._transition(ReadingState.READY)
+            self._remember_position(flush=True)
 
     def next_sentence(self) -> None:
         """Move to the next sentence (keeps reading if currently reading)."""
@@ -430,8 +500,81 @@ class ReadingSession(PlaybackListener):
             self._can_resume = False
             self._controller.preview(PREVIEW_TEXT, voice_id, self._speed)
 
+    # ----------------------------------------------------------- bookmarks
+
+    @property
+    def can_bookmark(self) -> bool:
+        """Return whether the open document supports bookmarks (saved PDFs do)."""
+        with self._lock:
+            return (
+                self._library is not None
+                and self._document is not None
+                and self._document.doc_id is not None
+            )
+
+    def bookmarks(self) -> list[Bookmark]:
+        """Return the open document's bookmarks in reading order."""
+        with self._lock:
+            doc_id = self._document.doc_id if self._document is not None else None
+            if self._library is None or doc_id is None:
+                return []
+            record = self._library.get(doc_id)
+            return _sorted(record.bookmarks) if record is not None else []
+
+    def add_bookmark(self, label: str | None = None) -> Bookmark | None:
+        """Bookmark the current sentence. Returns the bookmark, or None if unsupported.
+
+        If the sentence is already bookmarked, that bookmark is returned.
+        """
+        with self._lock:
+            if not self.can_bookmark:
+                return None
+            assert self._library is not None and self._document is not None
+            assert self._document.doc_id is not None
+            sentences = self._document.sentences
+            anchor = make_anchor(sentences, self._position)
+            default = sentences[self._position].text
+            if len(default) > _LABEL_CHARS:
+                default = default[:_LABEL_CHARS].rsplit(" ", 1)[0] + "\u2026"
+            bookmark = self._library.add_bookmark(self._document.doc_id, anchor, label or default)
+            self._library.flush()
+        self._listener.on_bookmarks_changed(self.bookmarks())
+        return bookmark
+
+    def rename_bookmark(self, bookmark_id: str, label: str) -> None:
+        """Change a bookmark's label."""
+        self._change_bookmarks(lambda lib, doc_id: lib.rename_bookmark(doc_id, bookmark_id, label))
+
+    def remove_bookmark(self, bookmark_id: str) -> None:
+        """Delete a bookmark."""
+        self._change_bookmarks(lambda lib, doc_id: lib.remove_bookmark(doc_id, bookmark_id))
+
+    def go_to_bookmark(self, bookmark_id: str) -> None:
+        """Move to a bookmark (reading continues from there if it was running)."""
+        target = next((b for b in self.bookmarks() if b.id == bookmark_id), None)
+        if target is not None:
+            self.seek(target.anchor.index, play=False)
+
+    def recent_documents(self, limit: int = 10) -> list[DocumentRecord]:
+        """Return recently opened documents, most recent first."""
+        return self._library.recent(limit) if self._library is not None else []
+
+    def _change_bookmarks(self, change: Callable[[LibraryStore, str], None]) -> None:
+        with self._lock:
+            if not self.can_bookmark:
+                return
+            assert self._library is not None and self._document is not None
+            assert self._document.doc_id is not None
+            change(self._library, self._document.doc_id)
+            self._library.flush()
+        self._listener.on_bookmarks_changed(self.bookmarks())
+
+    # ----------------------------------------------------------- shutdown
+
     def shutdown(self) -> None:
         """Stop playback and background work. Called when the app closes."""
+        with self._lock:
+            self._remember_position(flush=True)
         self.cancel_model_download()
         self._controller.shutdown()
         for thread in self._threads:
@@ -453,6 +596,7 @@ class ReadingSession(PlaybackListener):
             if self._state is ReadingState.PLAYING:
                 self._at_end = True
                 self._transition(ReadingState.READY)
+                self._remember_position(flush=True)  # Saves the start: _at_end is set.
 
     def on_preview_finished(self) -> None:
         """Nothing to do: the session state was settled when the preview started."""
@@ -478,6 +622,23 @@ class ReadingSession(PlaybackListener):
         if index != self._position:
             self._position = index
             self._listener.on_position_changed(index)
+            self._remember_position()
+
+    def _remember_position(self, *, flush: bool = False) -> None:
+        """Store the reading position of the open document (if it is saved at all).
+
+        Writes to disk at most every 30 seconds unless ``flush`` is set.
+        """
+        document = self._document
+        if self._library is None or document is None or document.doc_id is None:
+            return
+        # A finished document starts from the beginning next time.
+        position = 0 if self._at_end else self._position
+        self._library.set_position(document.doc_id, make_anchor(document.sentences, position))
+        if flush:
+            self._library.flush()
+        else:
+            self._library.save_if_due()
 
     def _settle(self) -> None:
         """Pick the resting state after a background load finished."""
@@ -504,3 +665,11 @@ class ReadingSession(PlaybackListener):
         self._threads = [t for t in self._threads if t.is_alive()]
         self._threads.append(thread)
         thread.start()
+
+
+_LABEL_CHARS = 60
+
+
+def _sorted(bookmarks: list[Bookmark]) -> list[Bookmark]:
+    """Return bookmarks in reading order."""
+    return sorted(bookmarks, key=lambda b: (b.anchor.index, b.created))

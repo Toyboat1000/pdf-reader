@@ -28,6 +28,8 @@ class Glyph(StrEnum):
     NEW_TEXT = "\ue8a5"
     PASTE = "\ue77f"
     EDIT = "\ue70f"
+    BOOKMARK = "\ue734"
+    BOOKMARKS = "\ue8a4"
 
 
 _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
@@ -40,6 +42,8 @@ _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
     Glyph.NEW_TEXT: QStyle.StandardPixmap.SP_FileIcon,
     Glyph.PASTE: QStyle.StandardPixmap.SP_FileDialogDetailedView,
     Glyph.EDIT: QStyle.StandardPixmap.SP_FileDialogContentsView,
+    Glyph.BOOKMARK: QStyle.StandardPixmap.SP_DialogApplyButton,
+    Glyph.BOOKMARKS: QStyle.StandardPixmap.SP_FileDialogListView,
 }
 
 

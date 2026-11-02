@@ -55,6 +55,7 @@ class DocumentView(QTextEdit):
         self._starts: list[int] = []
         self._ends: list[int] = []
         self._current = -1
+        self._bookmarked: set[int] = set()
         self._press_pos: QPoint | None = None
         self._side_margin = 0
         self._scroll_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
@@ -66,6 +67,7 @@ class DocumentView(QTextEdit):
     def set_document(self, document: ReadingDocument) -> None:
         """Show ``document``, replacing any previous content."""
         self._current = -1
+        self._bookmarked = set()
         self._starts.clear()
         self._ends.clear()
         self.setExtraSelections([])
@@ -121,6 +123,7 @@ class DocumentView(QTextEdit):
         self._starts.clear()
         self._ends.clear()
         self._current = -1
+        self._bookmarked = set()
         self.setExtraSelections([])
         self.clear()
 
@@ -129,18 +132,44 @@ class DocumentView(QTextEdit):
     def highlight(self, index: int) -> None:
         """Highlight sentence ``index`` and scroll it into view if needed."""
         if not 0 <= index < len(self._starts):
-            self.setExtraSelections([])
             self._current = -1
+            self._refresh_marks()
             return
         self._current = index
-        selection = QTextEdit.ExtraSelection()
-        selection.cursor = self._cursor_for(index)
-        fmt = QTextCharFormat()
-        fmt.setBackground(self._highlight_color())
-        fmt.setProperty(QTextFormat.Property.FullWidthSelection, False)
-        selection.format = fmt
-        self.setExtraSelections([selection])
+        self._refresh_marks()
         self._scroll_to(index)
+
+    def set_bookmarked(self, indexes: set[int]) -> None:
+        """Mark the sentences at ``indexes`` as bookmarked (shown underlined)."""
+        self._bookmarked = {i for i in indexes if 0 <= i < len(self._starts)}
+        self._refresh_marks()
+
+    @property
+    def bookmarked(self) -> set[int]:
+        """Return the indexes of sentences currently marked as bookmarked."""
+        return set(self._bookmarked)
+
+    def _refresh_marks(self) -> None:
+        """Draw bookmark underlines and the current-sentence highlight."""
+        selections = []
+        accent = self.palette().color(QPalette.ColorRole.Accent)
+        for index in sorted(self._bookmarked):
+            mark = QTextEdit.ExtraSelection()
+            mark.cursor = self._cursor_for(index)
+            fmt = QTextCharFormat()
+            fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.DashUnderline)
+            fmt.setUnderlineColor(accent)
+            mark.format = fmt
+            selections.append(mark)
+        if self._current >= 0:
+            current = QTextEdit.ExtraSelection()
+            current.cursor = self._cursor_for(self._current)
+            fmt = QTextCharFormat()
+            fmt.setBackground(self._highlight_color())
+            fmt.setProperty(QTextFormat.Property.FullWidthSelection, False)
+            current.format = fmt
+            selections.append(current)
+        self.setExtraSelections(selections)
 
     def _highlight_color(self) -> QColor:
         color = QColor(self.palette().color(QPalette.ColorRole.Highlight))

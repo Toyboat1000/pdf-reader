@@ -19,6 +19,8 @@ class ReadingDocument:
         path: The file the document was opened from, if any.
         pdf: The extracted PDF with full layout information, for PDF documents.
         text: The original text, for pasted-text documents.
+        doc_id: Content-based identifier used to remember the reading position and
+            bookmarks, or ``None`` if the document is not remembered.
     """
 
     title: str
@@ -27,6 +29,7 @@ class ReadingDocument:
     path: Path | None = None
     pdf: Document | None = None
     text: str | None = None
+    doc_id: str | None = None
     _page_starts: tuple[int, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -39,10 +42,17 @@ class ReadingDocument:
         object.__setattr__(self, "_page_starts", tuple(starts))
 
     @classmethod
-    def from_pdf(cls, pdf: Document, sentences: tuple[Segment, ...]) -> "ReadingDocument":
+    def from_pdf(
+        cls, pdf: Document, sentences: tuple[Segment, ...], doc_id: str | None = None
+    ) -> "ReadingDocument":
         """Create a reading document for an extracted PDF."""
         return cls(
-            title=pdf.title, sentences=sentences, page_count=pdf.page_count, path=pdf.path, pdf=pdf
+            title=pdf.title,
+            sentences=sentences,
+            page_count=pdf.page_count,
+            path=pdf.path,
+            pdf=pdf,
+            doc_id=doc_id,
         )
 
     @classmethod

@@ -12,6 +12,8 @@ from pdf_reader.audio.playback import PlaybackController
 from pdf_reader.audio.player import AudioPlayer, PlayerListener
 from pdf_reader.core import session as session_module
 from pdf_reader.core.session import ReadingSession, ReadingState
+from pdf_reader.library import LibraryStore
+from pdf_reader.text import TextPipeline, default_steps
 from pdf_reader.tts.base import ModelLoadError
 from tests.fakes import FakeEngine, Recorder, StreamFactory, wait_until
 
@@ -32,7 +34,13 @@ def make_pdf(path: Path, sentences_per_page: list[int]) -> Path:
 
 
 class Harness:
-    def __init__(self, engine: FakeEngine | None = None) -> None:
+    def __init__(
+        self,
+        engine: FakeEngine | None = None,
+        *,
+        library: LibraryStore | None = None,
+        pipeline: TextPipeline | None = None,
+    ) -> None:
         self.engine = engine or FakeEngine()
         self.listener = Recorder()
         self.factory = StreamFactory()
@@ -48,6 +56,8 @@ class Harness:
             self.listener,
             voice="af_heart",
             speed=1.0,
+            library=library,
+            pipeline=pipeline,
             controller_factory=controller_factory,
         )
 
@@ -334,3 +344,191 @@ def test_text_replaces_pdf_document(h: Harness, pdf: Path) -> None:
     assert h.session.document.sentence_count == 1
     assert h.session.position == 0
     assert h.session.state is ReadingState.READY
+
+
+# ------------------------------------------------------------- library: resume
+
+
+@pytest.fixture
+def library_path(tmp_path: Path) -> Path:
+    return tmp_path / "library.json"
+
+
+def with_library(library_path: Path, pipeline: TextPipeline | None = None) -> Harness:
+    harness = Harness(library=LibraryStore(library_path), pipeline=pipeline)
+    harness.load_model()
+    return harness
+
+
+def test_reopening_resumes_where_reading_stopped(library_path: Path, pdf: Path) -> None:
+    first = with_library(library_path)
+    try:
+        first.open(pdf)
+        assert first.listener.named("on_resumed") == []
+        first.session.seek(3, play=False)
+    finally:
+        first.session.shutdown()  # Saves the position.
+
+    second = with_library(library_path)
+    try:
+        second.open(pdf)
+        assert second.session.position == 3
+        assert second.listener.named("on_resumed") == [3]
+        assert second.listener.named("on_position_changed")[-1] == 3
+        assert second.session.state is ReadingState.READY  # Not playing by itself.
+    finally:
+        second.session.shutdown()
+
+
+def test_resume_survives_renaming_the_file(library_path: Path, pdf: Path, tmp_path: Path) -> None:
+    first = with_library(library_path)
+    try:
+        first.open(pdf)
+        first.session.seek(2, play=False)
+        first.session.stop()
+    finally:
+        first.session.shutdown()
+    renamed = pdf.rename(tmp_path / "renamed.pdf")
+
+    second = with_library(library_path)
+    try:
+        second.open(renamed)
+        assert second.session.position == 2
+        assert second.session.recent_documents()[0].path == str(renamed)
+    finally:
+        second.session.shutdown()
+
+
+def test_finishing_a_document_resets_its_position(library_path: Path, pdf: Path) -> None:
+    first = with_library(library_path)
+    try:
+        first.open(pdf)
+        first.session.seek(4)  # Last sentence; starts playing.
+        stream = first.factory.wait_active()
+        assert wait_until(lambda: len(first.engine.calls) >= 1)
+        stream.pump(400)
+        assert wait_until(lambda: first.session.state is ReadingState.READY)
+    finally:
+        first.session.shutdown()
+
+    second = with_library(library_path)
+    try:
+        second.open(pdf)
+        assert second.session.position == 0
+        assert second.listener.named("on_resumed") == []
+    finally:
+        second.session.shutdown()
+
+
+def test_position_is_saved_when_switching_documents(
+    library_path: Path, pdf: Path, tmp_path: Path
+) -> None:
+    other = make_pdf(tmp_path / "other.pdf", [2])
+    harness = with_library(library_path)
+    try:
+        harness.open(pdf)
+        harness.session.seek(4, play=False)
+        harness.open(other)
+        harness.open(pdf)
+        assert harness.session.position == 4
+    finally:
+        harness.session.shutdown()
+
+
+def test_text_documents_are_not_remembered(library_path: Path) -> None:
+    harness = with_library(library_path)
+    try:
+        harness.session.open_text("Private pasted text. Second sentence.")
+        assert wait_until(lambda: harness.session.document is not None)
+        assert not harness.session.can_bookmark
+        assert harness.session.add_bookmark() is None
+        assert harness.session.bookmarks() == []
+        harness.session.seek(1, play=False)
+    finally:
+        harness.session.shutdown()
+    saved = library_path.read_text("utf-8") if library_path.exists() else ""
+    assert "Private" not in saved
+
+
+# ---------------------------------------------------------- library: bookmarks
+
+
+def test_bookmark_add_rename_remove_and_jump(library_path: Path, pdf: Path) -> None:
+    harness = with_library(library_path)
+    try:
+        harness.open(pdf)
+        assert harness.listener.named("on_bookmarks_changed")[-1] == []
+        harness.session.seek(3, play=False)
+        mark = harness.session.add_bookmark()
+        assert mark is not None
+        assert mark.label == "Sentence 3."
+        assert mark.anchor.index == 3
+        assert harness.listener.named("on_bookmarks_changed")[-1] == [mark]
+
+        harness.session.seek(1, play=False)
+        early = harness.session.add_bookmark("Early part")
+        assert early is not None
+        assert [b.id for b in harness.session.bookmarks()] == [early.id, mark.id]
+
+        harness.session.rename_bookmark(mark.id, "Important")
+        assert [b.label for b in harness.session.bookmarks()] == ["Early part", "Important"]
+
+        harness.session.go_to_bookmark(mark.id)
+        assert harness.session.position == 3
+        assert harness.session.state is ReadingState.READY
+
+        harness.session.remove_bookmark(early.id)
+        assert [b.id for b in harness.session.bookmarks()] == [mark.id]
+    finally:
+        harness.session.shutdown()
+
+    reopened = with_library(library_path)
+    try:
+        reopened.open(pdf)
+        (saved,) = reopened.listener.named("on_bookmarks_changed")[-1]
+        assert saved.label == "Important"
+    finally:
+        reopened.session.shutdown()
+
+
+def test_go_to_bookmark_while_playing_keeps_playing(library_path: Path, pdf: Path) -> None:
+    harness = with_library(library_path)
+    try:
+        harness.open(pdf)
+        harness.session.seek(4, play=False)
+        mark = harness.session.add_bookmark()
+        assert mark is not None
+        harness.session.seek(0)
+        assert harness.session.state is ReadingState.PLAYING
+        harness.session.go_to_bookmark(mark.id)
+        assert harness.session.position == 4
+        assert harness.session.state is ReadingState.PLAYING
+    finally:
+        harness.session.shutdown()
+
+
+def test_bookmarks_follow_their_sentence_when_text_processing_changes(
+    library_path: Path, pdf: Path
+) -> None:
+    first = with_library(library_path)
+    try:
+        first.open(pdf)
+        first.session.seek(3, play=False)
+        assert first.session.add_bookmark() is not None
+    finally:
+        first.session.shutdown()
+
+    def drop_first_sentence(segments: list[Any]) -> list[Any]:
+        return segments[1:]
+
+    shifted = TextPipeline([*default_steps(), drop_first_sentence])
+    second = with_library(library_path, pipeline=shifted)
+    try:
+        second.open(pdf)
+        (mark,) = second.session.bookmarks()
+        assert mark.anchor.index == 2
+        assert second.session.document is not None
+        assert second.session.document.sentences[2].text == "Sentence 3."
+        assert second.session.position == 2  # The resume position followed too.
+    finally:
+        second.session.shutdown()

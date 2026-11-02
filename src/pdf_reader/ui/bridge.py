@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, Signal
 
 from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.session import ReadingState, SessionListener
+from pdf_reader.library import Bookmark
 from pdf_reader.tts.base import Voice
 
 
@@ -27,6 +28,8 @@ class SessionBridge(QObject, SessionListener):
     document_error = Signal(object, str)  # Path or None, message
     position_changed = Signal(int)
     playback_error = Signal(str)
+    resumed = Signal(int)
+    bookmarks_changed = Signal(list)  # list[Bookmark]
 
     def on_state_changed(self, state: ReadingState) -> None:
         """Emit :attr:`state_changed`."""
@@ -67,3 +70,11 @@ class SessionBridge(QObject, SessionListener):
     def on_playback_error(self, message: str) -> None:
         """Emit :attr:`playback_error`."""
         self.playback_error.emit(message)
+
+    def on_resumed(self, index: int) -> None:
+        """Emit :attr:`resumed`."""
+        self.resumed.emit(index)
+
+    def on_bookmarks_changed(self, bookmarks: list[Bookmark]) -> None:
+        """Emit :attr:`bookmarks_changed`."""
+        self.bookmarks_changed.emit(bookmarks)

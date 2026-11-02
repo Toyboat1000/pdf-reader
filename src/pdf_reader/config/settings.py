@@ -30,13 +30,17 @@ class Settings:
         voice: Identifier of the selected TTS voice.
         speed: Reading speed multiplier, between ``MIN_SPEED`` and ``MAX_SPEED``.
         window_geometry: Opaque, hex-encoded window size and position from the UI.
+        window_state: Opaque, hex-encoded toolbar and panel layout from the UI.
         last_folder: Folder of the most recently opened document.
+        show_bookmarks: Whether the bookmarks panel is shown.
     """
 
     voice: str = DEFAULT_VOICE
     speed: float = 1.0
     window_geometry: str | None = None
+    window_state: str | None = None
     last_folder: str | None = None
+    show_bookmarks: bool = False
 
 
 def clamp_speed(speed: float) -> float:
@@ -52,9 +56,11 @@ def _validated(raw: dict[str, Any]) -> Settings:
     speed = raw.get("speed")
     if isinstance(speed, int | float) and not isinstance(speed, bool):
         result.speed = clamp_speed(float(speed))
-    for name in ("window_geometry", "last_folder"):
+    for name in ("window_geometry", "window_state", "last_folder"):
         if isinstance(value := raw.get(name), str) and value:
             setattr(result, name, value)
+    if isinstance(show := raw.get("show_bookmarks"), bool):
+        result.show_bookmarks = show
     known = {f.name for f in fields(Settings)}
     if unknown := set(raw) - known:
         log.debug("Ignoring unknown settings keys: %s", sorted(unknown))

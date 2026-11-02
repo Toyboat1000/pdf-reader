@@ -53,6 +53,10 @@ class SynthesisError(TtsError):
     """Speech could not be generated for a piece of text."""
 
 
+class SynthesisCancelledError(TtsError):
+    """A :meth:`TtsEngine.synthesize` call was interrupted by :meth:`TtsEngine.cancel`."""
+
+
 class TtsEngine(ABC):
     """Abstract text-to-speech engine.
 
@@ -97,7 +101,16 @@ class TtsEngine(ABC):
 
         Raises:
             SynthesisError: Generation failed.
+            SynthesisCancelledError: :meth:`cancel` was called during generation.
         """
+
+    def cancel(self) -> None:
+        """Interrupt any :meth:`synthesize` calls in progress, if the engine supports it.
+
+        Used to stop generating audio the user no longer needs (after a seek, for
+        example). Engines that cannot interrupt simply let the call finish.
+        """
+        return None
 
     def missing_files(self) -> list[RemoteFile]:
         """Return model files that must be downloaded before :meth:`load` can work.

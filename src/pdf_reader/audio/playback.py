@@ -1,17 +1,20 @@
 """Look-ahead speech generation feeding the audio player.
 
-A single worker thread synthesizes the sentence being played plus a few after it, so
-the next sentence is always ready before the current one ends. Two counters keep the
+A worker thread synthesizes the sentence being played plus a few after it, so the
+next sentence is always ready before the current one ends. Two counters keep the
 buffer consistent with what the user wants:
 
 * ``epoch`` changes on every seek, stop, or preview. Audio and events from an older
-  epoch are discarded.
-* ``params_version`` changes when the voice or speed changes. Audio generated with
-  old parameters is discarded, but the sentence currently playing finishes, so the
-  change takes effect from the next sentence.
+  epoch are discarded, and a synthesis still running for an older epoch is cancelled.
+* ``params_version`` changes when the voice or speed changes. Upcoming sentences are
+  regenerated with the new settings, and each regenerated chunk replaces its
+  outdated version in the player's queue. Until a replacement is ready the outdated
+  chunk stays queued, so a settings change never causes a gap: it takes effect from
+  the next sentence whenever generation keeps up (it normally does, at about five
+  times real time), or one sentence later otherwise.
 
-Recently generated audio is cached, so stepping back and forth between nearby
-sentences is instant.
+Recently generated audio is cached, so going back and forth between nearby sentences
+starts playing immediately.
 """
 
 import logging
@@ -25,7 +28,7 @@ import numpy as np
 
 from pdf_reader.audio.player import PREVIEW_INDEX, AudioChunk, AudioPlayer, PlayerListener
 from pdf_reader.config.settings import clamp_speed
-from pdf_reader.tts.base import AudioArray, TtsEngine, TtsError
+from pdf_reader.tts.base import AudioArray, SynthesisCancelledError, TtsEngine, TtsError
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +79,8 @@ class PlaybackListener(Protocol):
 type PlayerFactory = Callable[[int, PlayerListener], AudioPlayer]
 """Creates the audio player for ``(sample_rate, listener)``; replaceable in tests."""
 
+type _CacheKey = tuple[int, str, float]
+
 
 @dataclass(frozen=True, slots=True)
 class _Job:
@@ -110,7 +115,8 @@ class PlaybackController(PlayerListener):
         self._lookahead = max(0, lookahead)
         self._player = player_factory(engine.sample_rate, self)
 
-        self._cond = threading.Condition()
+        # Reentrant: player and engine callbacks may re-enter on the same thread.
+        self._cond = threading.Condition(threading.RLock())
         self._script: Sequence[Speakable] = ()
         self._voice = voice
         self._speed = clamp_speed(speed)
@@ -119,9 +125,10 @@ class PlaybackController(PlayerListener):
         self._active = False  # Generating for document playback.
         self._position = 0  # Sentence being played, or about to be.
         self._next_index = 0  # Next sentence to generate.
-        self._needs_restart = True  # Player holds no audio for the current position.
+        self._needs_restart = True  # The player holds no audio for the current position.
         self._preview: tuple[str, str, float] | None = None
-        self._cache: OrderedDict[tuple[int, str, float], AudioArray] = OrderedDict()
+        self._busy: _Job | None = None  # Job being synthesized right now.
+        self._cache: OrderedDict[_CacheKey, AudioArray] = OrderedDict()
         self._failures = 0
         self._shutdown = False
 
@@ -156,14 +163,16 @@ class PlaybackController(PlayerListener):
             if not 0 <= index < len(self._script):
                 log.warning("play_from(%d) out of range (0..%d)", index, len(self._script) - 1)
                 return
-            self._epoch += 1
-            self._player.clear()
+            self._new_epoch_locked()
             self._preview = None
             self._active = True
             self._needs_restart = False
             self._position = index
             self._next_index = index
             self._failures = 0
+            # Already generated audio starts at once, without waiting for the worker.
+            while self._next_index <= index + self._lookahead and self._enqueue_cached_locked():
+                pass
             self._cond.notify_all()
         self._player.resume()
 
@@ -208,8 +217,7 @@ class PlaybackController(PlayerListener):
         restarts it at the current sentence.
         """
         with self._cond:
-            self._epoch += 1
-            self._player.clear()
+            self._new_epoch_locked()
             self._active = False
             self._needs_restart = True
             self._preview = (text, voice, clamp_speed(speed))
@@ -220,7 +228,7 @@ class PlaybackController(PlayerListener):
         """Stop everything and release the audio device. Safe to call twice."""
         with self._cond:
             self._shutdown = True
-            self._epoch += 1
+            self._new_epoch_locked()
             self._cond.notify_all()
         self._worker.join(timeout=5.0)
         if self._worker.is_alive():
@@ -260,9 +268,24 @@ class PlaybackController(PlayerListener):
 
     # ---------------------------------------------------------------- internals
 
-    def _stop_locked(self) -> None:
+    def _new_epoch_locked(self) -> None:
+        """Invalidate all queued audio and any synthesis in progress."""
         self._epoch += 1
         self._player.clear()
+        self._cancel_stale_locked()
+
+    def _cancel_stale_locked(self) -> None:
+        busy = self._busy
+        if busy is not None and self._is_stale_locked(busy):
+            self._engine.cancel()
+
+    def _is_stale_locked(self, job: _Job) -> bool:
+        if job.epoch != self._epoch:
+            return True
+        return job.index != PREVIEW_INDEX and job.params_version != self._params_version
+
+    def _stop_locked(self) -> None:
+        self._new_epoch_locked()
         self._active = False
         self._needs_restart = True
         self._preview = None
@@ -271,13 +294,14 @@ class PlaybackController(PlayerListener):
         self._params_version += 1
         if not self._active:
             return
-        playing = self._player.drop_queued()
-        if playing is not None and playing.epoch == self._epoch:
-            # Let the audible sentence finish; regenerate everything after it.
+        playing = self._player.current
+        if playing is not None and playing.epoch == self._epoch and playing.index >= 0:
+            # The audible sentence finishes as it is; regenerate everything after it.
             self._position = max(self._position, playing.index)
             self._next_index = playing.index + 1
         else:
             self._next_index = self._position
+        self._cancel_stale_locked()
         self._cond.notify_all()
 
     def _has_work_locked(self) -> bool:
@@ -289,24 +313,7 @@ class PlaybackController(PlayerListener):
             and self._next_index <= self._position + self._lookahead
         )
 
-    def _run(self) -> None:
-        while True:
-            with self._cond:
-                while not self._shutdown and not self._has_work_locked():
-                    self._cond.wait()
-                if self._shutdown:
-                    return
-                job = self._take_job_locked()
-            samples, failed = self._synthesize(job)
-            self._deliver(job, samples, failed)
-
-    def _take_job_locked(self) -> _Job:
-        if self._preview is not None:
-            text, voice, speed = self._preview
-            self._preview = None
-            return _Job(PREVIEW_INDEX, text, True, voice, speed, self._epoch, self._params_version)
-        index = self._next_index
-        self._next_index += 1
+    def _job_for_locked(self, index: int) -> _Job:
         item = self._script[index]
         return _Job(
             index,
@@ -318,16 +325,54 @@ class PlaybackController(PlayerListener):
             self._params_version,
         )
 
-    def _synthesize(self, job: _Job) -> tuple[AudioArray, bool]:
-        key = (job.index, job.voice, job.speed)
-        if job.index != PREVIEW_INDEX:
+    def _enqueue_cached_locked(self) -> bool:
+        """Queue the next sentence straight from the cache, if it is there."""
+        if self._next_index >= len(self._script):
+            return False
+        samples = self._cache.get((self._next_index, self._voice, self._speed))
+        if samples is None:
+            return False
+        self._player.offer(AudioChunk(self._next_index, self._epoch, samples))
+        self._next_index += 1
+        return True
+
+    def _run(self) -> None:
+        while True:
             with self._cond:
-                cached = self._cache.get(key)
-                if cached is not None:
-                    self._cache.move_to_end(key)
-                    return cached, False
+                while True:
+                    if self._shutdown:
+                        return
+                    if self._has_work_locked():
+                        if self._preview is None and self._enqueue_cached_locked():
+                            continue
+                        break
+                    self._cond.wait()
+                job = self._take_job_locked()
+                self._busy = job
+            try:
+                samples, failed = self._synthesize(job)
+            finally:
+                with self._cond:
+                    self._busy = None
+            if samples is not None:
+                self._deliver(job, samples, failed)
+
+    def _take_job_locked(self) -> _Job:
+        if self._preview is not None:
+            text, voice, speed = self._preview
+            self._preview = None
+            return _Job(PREVIEW_INDEX, text, True, voice, speed, self._epoch, self._params_version)
+        job = self._job_for_locked(self._next_index)
+        self._next_index += 1
+        return job
+
+    def _synthesize(self, job: _Job) -> tuple[AudioArray | None, bool]:
+        """Run the engine. Returns ``(None, False)`` if the job was cancelled."""
         try:
             raw = self._engine.synthesize(job.text, job.voice, job.speed)
+        except SynthesisCancelledError:
+            log.debug("Synthesis of %d cancelled", job.index)
+            return None, False
         except TtsError:
             log.exception("Could not synthesize sentence %d", job.index)
             return np.zeros(0, dtype=np.float32), True
@@ -335,7 +380,7 @@ class PlaybackController(PlayerListener):
         samples = ensure_trailing_silence(raw, self._engine.sample_rate, pause)
         if job.index != PREVIEW_INDEX:
             with self._cond:
-                self._cache[key] = samples
+                self._cache[(job.index, job.voice, job.speed)] = samples
                 while len(self._cache) > _CACHE_SIZE:
                     self._cache.popitem(last=False)
         return samples, False
@@ -343,17 +388,15 @@ class PlaybackController(PlayerListener):
     def _deliver(self, job: _Job, samples: AudioArray, failed: bool) -> None:
         give_up = False
         with self._cond:
-            if job.epoch != self._epoch or (
-                job.index != PREVIEW_INDEX and job.params_version != self._params_version
-            ):
-                return  # Stale: the user moved on while this was being generated.
+            if self._is_stale_locked(job):
+                return  # The user moved on while this was being generated.
             self._failures = self._failures + 1 if failed else 0
             if self._failures >= _MAX_CONSECUTIVE_FAILURES:
                 self._stop_locked()
                 give_up = True
             else:
-                # Enqueue under the lock so a concurrent seek can't slip in between.
-                self._player.enqueue(AudioChunk(job.index, job.epoch, samples))
+                # Offer under the lock so a concurrent seek can't slip in between.
+                self._player.offer(AudioChunk(job.index, job.epoch, samples))
         if give_up:
             self._listener.on_playback_error(
                 "Speech generation failed several times in a row. Please try another "

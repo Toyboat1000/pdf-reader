@@ -1,5 +1,8 @@
 """Gap-free audio playback of a queue of chunks through a single output stream.
 
+Chunks with an index and epoch already in the queue replace the queued one (see
+:meth:`AudioPlayer.offer`).
+
 The sound card pulls samples through a callback. Chunks queued back to back are
 played without any gap, because the callback moves straight from the end of one
 chunk to the start of the next within the same buffer.
@@ -99,7 +102,7 @@ class _Event(Enum):
     STARTED = auto()
     FINISHED = auto()
     IDLE = auto()
-    ERROR = auto()
+    START = auto()
     STOP = auto()
 
 
@@ -126,6 +129,7 @@ class AudioPlayer:
         self._paused = False
         self._silent_frames = 0
         self._idle_reported = False
+        self._start_requested = False
 
         self._stream_lock = threading.Lock()  # Guards stream creation, start, and stop.
         self._stream: OutputStream | None = None
@@ -133,7 +137,7 @@ class AudioPlayer:
         self._closed = False
         self._underflows = 0
 
-        self._events: queue.SimpleQueue[tuple[_Event, AudioChunk | str | None, float]] = (
+        self._events: queue.SimpleQueue[tuple[_Event, AudioChunk | None, float]] = (
             queue.SimpleQueue()
         )
         self._dispatcher = threading.Thread(
@@ -143,12 +147,33 @@ class AudioPlayer:
 
     # ----------------------------------------------------------------- control
 
-    def enqueue(self, chunk: AudioChunk) -> None:
-        """Append a chunk to play after everything already queued."""
+    def offer(self, chunk: AudioChunk) -> bool:
+        """Queue a chunk, or replace the queued chunk with the same index and epoch.
+
+        Replacing lets regenerated audio (after a voice or speed change) take the
+        place of outdated audio that has not started yet, without ever leaving the
+        queue empty in the meantime.
+
+        Returns:
+            False if the chunk was discarded because that sentence (or a later one
+            of the same epoch) is already playing.
+        """
         with self._lock:
+            current = self._current
+            if (
+                current is not None
+                and current.epoch == chunk.epoch
+                and current.index >= chunk.index
+            ):
+                return False
+            for i, queued in enumerate(self._queue):
+                if queued.epoch == chunk.epoch and queued.index == chunk.index:
+                    self._queue[i] = chunk
+                    return True
             self._queue.append(chunk)
             self._idle_reported = False
         self._ensure_running()
+        return True
 
     def clear(self) -> None:
         """Drop the current chunk and everything queued, silencing output at once."""
@@ -157,14 +182,10 @@ class AudioPlayer:
             self._current = None
             self._offset = 0
 
-    def drop_queued(self) -> AudioChunk | None:
-        """Drop queued chunks but let the current one finish.
-
-        Returns:
-            The chunk that keeps playing, or ``None`` if nothing is playing.
-        """
+    @property
+    def current(self) -> AudioChunk | None:
+        """Return the chunk being played, if any."""
         with self._lock:
-            self._queue.clear()
             return self._current
 
     def pause(self) -> None:
@@ -210,11 +231,22 @@ class AudioPlayer:
     # ---------------------------------------------------------------- internals
 
     def _ensure_running(self) -> None:
-        """Open and start the stream if needed.
+        """Ask the dispatcher thread to open and start the stream if needed.
 
-        Errors are reported to the listener from the dispatcher thread, never from
-        here: callers may be holding their own locks.
+        Opening an audio device can take most of a second on Windows, so it never
+        happens on the caller's (possibly the UI) thread.
         """
+        with self._lock:
+            if self._start_requested:
+                return
+            self._start_requested = True
+        self._events.put((_Event.START, None, 0.0))
+
+    def _start_stream(self) -> None:
+        """Open and start the stream. Runs on the dispatcher thread."""
+        with self._lock:
+            self._start_requested = False
+        error: Exception | None = None
         with self._stream_lock:
             if self._closed:
                 return
@@ -228,11 +260,12 @@ class AudioPlayer:
             except Exception as exc:
                 log.exception("Could not start audio output")
                 self._stream = None
-                message = (
-                    "Couldn't play audio. Please check that a speaker or headphones are "
-                    f"connected and enabled. ({exc})"
-                )
-                self._events.put((_Event.ERROR, message, 0.0))
+                error = exc
+        if error is not None:
+            self._listener.on_audio_error(
+                "Couldn't play audio. Please check that a speaker or headphones are "
+                f"connected and enabled. ({error})"
+            )
 
     def _suspend_if_idle(self) -> None:
         with self._stream_lock:
@@ -252,7 +285,7 @@ class AudioPlayer:
         if status is not None and getattr(status, "output_underflow", False):
             self._underflows += 1
         delay = self._output_delay(time_info)
-        posted: list[tuple[_Event, AudioChunk | str | None, float]] = []
+        posted: list[tuple[_Event, AudioChunk | None, float]] = []
         with self._lock:
             pos = 0
             if not self._paused:
@@ -304,13 +337,14 @@ class AudioPlayer:
             if kind is _Event.IDLE:
                 self._suspend_if_idle()
                 continue
+            if kind is _Event.START:
+                self._start_stream()
+                continue
             delay = fire_at - time.monotonic()
             if delay > 0:
                 time.sleep(min(delay, 1.0))  # Wait until the audio is actually audible.
             try:
-                if kind is _Event.ERROR and isinstance(payload, str):
-                    self._listener.on_audio_error(payload)
-                elif kind is _Event.STARTED and isinstance(payload, AudioChunk):
+                if kind is _Event.STARTED and isinstance(payload, AudioChunk):
                     self._listener.on_chunk_started(payload)
                 elif kind is _Event.FINISHED and isinstance(payload, AudioChunk):
                     self._listener.on_chunk_finished(payload)

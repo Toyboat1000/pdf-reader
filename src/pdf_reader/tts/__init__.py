@@ -3,10 +3,19 @@
 from pdf_reader.tts.base import (
     AudioArray,
     ModelLoadError,
+    SynthesisCancelledError,
     SynthesisError,
     TtsEngine,
     TtsError,
     Voice,
 )
 
-__all__ = ["AudioArray", "ModelLoadError", "SynthesisError", "TtsEngine", "TtsError", "Voice"]
+__all__ = [
+    "AudioArray",
+    "ModelLoadError",
+    "SynthesisCancelledError",
+    "SynthesisError",
+    "TtsEngine",
+    "TtsError",
+    "Voice",
+]

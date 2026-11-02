@@ -6,7 +6,6 @@ defaults field by field, so a bad settings file can never stop the app from star
 
 import json
 import logging
-import os
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -93,6 +92,6 @@ def save_settings(settings: Settings, path: Path) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        tmp.replace(path)
     except OSError:
         log.exception("Could not save settings to %s", path)

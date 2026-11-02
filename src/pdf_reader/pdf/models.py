@@ -89,5 +89,8 @@ class Document:
     def has_text(self) -> bool:
         """Return whether any page contains non-whitespace text."""
         return any(
-            line.text.strip() for page in self.pages for block in page.blocks for line in block.lines
+            line.text.strip()
+            for page in self.pages
+            for block in page.blocks
+            for line in block.lines
         )

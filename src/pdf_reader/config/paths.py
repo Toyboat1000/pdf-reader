@@ -18,13 +18,13 @@ def _base_dir(env_var: str, fallback: Path, env: Mapping[str, str] | None) -> Pa
 
 
 def settings_dir(env: Mapping[str, str] | None = None) -> Path:
-    """Return the folder holding the settings file (``%APPDATA%\\<AppName>``)."""
+    r"""Return the folder holding the settings file (``%APPDATA%\<AppName>``)."""
     base = _base_dir("APPDATA", Path.home() / "AppData" / "Roaming", env)
     return base / APP_NAME
 
 
 def local_data_dir(env: Mapping[str, str] | None = None) -> Path:
-    """Return the folder for machine-local data (``%LOCALAPPDATA%\\<AppName>``)."""
+    r"""Return the folder for machine-local data (``%LOCALAPPDATA%\<AppName>``)."""
     base = _base_dir("LOCALAPPDATA", Path.home() / "AppData" / "Local", env)
     return base / APP_NAME
 

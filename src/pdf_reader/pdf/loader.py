@@ -86,9 +86,7 @@ def _extract_page(page: pymupdf.Page) -> Page:
         if lines:
             blocks.append(TextBlock(lines=lines, bbox=_bbox(raw_block["bbox"])))
     rect = page.rect
-    return Page(
-        number=page.number + 1, width=rect.width, height=rect.height, blocks=tuple(blocks)
-    )
+    return Page(number=page.number + 1, width=rect.width, height=rect.height, blocks=tuple(blocks))
 
 
 def _make_line(raw_line: dict[str, Any]) -> TextLine | None:

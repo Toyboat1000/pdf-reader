@@ -25,8 +25,11 @@ NUMBER_ABBREVIATIONS: frozenset[str] = frozenset(
     {"no", "nos", "p", "pp", "fig", "figs", "eq", "eqs", "vol", "vols", "ch", "sec", "art", "ref"}
 )
 
-_BOUNDARY = re.compile(r"[.!?…]+[\"'”’)\]]*\s+")
-_OPENERS = "\"'“‘([—–-"
+# Terminal punctuation (including the ellipsis character), optional closing quotes
+# or brackets, then whitespace.
+_BOUNDARY = re.compile(r"[.!?\u2026]+[\"'\u201d\u2019)\]]*\s+")
+# Characters that may open a sentence before its first letter: quotes, brackets, dashes.
+_OPENERS = "\"'\u201c\u2018([\u2014\u2013-"
 _LAST_TOKEN = re.compile(r"(\S+)$")
 _DOTTED_ACRONYM = re.compile(r"^(?:[A-Za-z]\.)+[A-Za-z]$")
 

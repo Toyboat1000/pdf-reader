@@ -47,10 +47,10 @@ _HYPHEN_BREAK = re.compile(r"(\w)-[ \t]*\n[ \t]*(\w)")
 
 @text_step
 def fix_hyphenated_line_breaks(text: str) -> str:
-    """Rejoin words hyphenated at line ends.
+    r"""Rejoin words hyphenated at line ends.
 
-    "exam-\\nple" becomes "example". When the next line starts with a capital
-    letter or digit ("Jean-\\nPaul", "COVID-\\n19") the hyphen is kept.
+    "exam-\nple" becomes "example". When the next line starts with a capital
+    letter or digit ("Jean-\nPaul", "COVID-\n19") the hyphen is kept.
     """
 
     def join(match: re.Match[str]) -> str:

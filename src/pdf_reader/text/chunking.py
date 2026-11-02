@@ -10,7 +10,7 @@ English stays well below that and keeps the time to first audio short."""
 # Preferred split points, best first. A chunk ends right after the matched text.
 _DELIMITER_GROUPS: tuple[re.Pattern[str], ...] = (
     re.compile(r"[;:](?=\s)"),
-    re.compile(r"\s[—–-](?=\s)|—"),
+    re.compile(r"\s[\u2014\u2013-](?=\s)|\u2014"),  # Em dash, en dash, or hyphen.
     re.compile(r",(?=\s)"),
     re.compile(r"(?<=\S)\s"),
 )

@@ -10,6 +10,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
+    QGuiApplication,
     QKeySequence,
 )
 from PySide6.QtWidgets import (
@@ -33,6 +34,7 @@ from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.document_view import DocumentView
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
 from pdf_reader.ui.icons import Glyph, make_icon
+from pdf_reader.ui.text_dialog import TextInputDialog
 
 log = logging.getLogger(__name__)
 
@@ -126,6 +128,25 @@ class MainWindow(QMainWindow):
         self._open_action.setToolTip("Open a PDF (Ctrl+O)")
         self._open_action.triggered.connect(self._choose_file)
 
+        self._new_text_action = QAction(
+            make_icon(Glyph.NEW_TEXT, self), "&New Text Document...", self
+        )
+        self._new_text_action.setShortcut(QKeySequence.StandardKey.New)
+        self._new_text_action.setToolTip("Type or paste text to read aloud (Ctrl+N)")
+        self._new_text_action.triggered.connect(lambda: self._ask_for_text(""))
+
+        self._paste_action = QAction(make_icon(Glyph.PASTE, self), "&Paste Text...", self)
+        self._paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self._paste_action.setToolTip("Read the text on the clipboard (Ctrl+V)")
+        self._paste_action.triggered.connect(
+            lambda: self._ask_for_text(QGuiApplication.clipboard().text())
+        )
+
+        self._edit_text_action = QAction(make_icon(Glyph.EDIT, self), "&Edit Text...", self)
+        self._edit_text_action.setShortcut(QKeySequence("Ctrl+E"))
+        self._edit_text_action.setToolTip("Change the current text document (Ctrl+E)")
+        self._edit_text_action.triggered.connect(self._edit_text)
+
         self._exit_action = QAction("E&xit", self)
         self._exit_action.setShortcut(QKeySequence("Alt+F4"))
         self._exit_action.triggered.connect(self.close)
@@ -172,6 +193,10 @@ class MainWindow(QMainWindow):
         file_menu = bar.addMenu("&File")
         file_menu.addAction(self._open_action)
         file_menu.addSeparator()
+        file_menu.addAction(self._new_text_action)
+        file_menu.addAction(self._paste_action)
+        file_menu.addAction(self._edit_text_action)
+        file_menu.addSeparator()
         file_menu.addAction(self._exit_action)
 
         playback = bar.addMenu("&Playback")
@@ -196,6 +221,8 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         toolbar.addAction(self._open_action)
+        toolbar.addAction(self._new_text_action)
+        toolbar.addAction(self._paste_action)
         toolbar.addSeparator()
         toolbar.addAction(self._prev_action)
         toolbar.addAction(self._play_action)
@@ -278,19 +305,47 @@ class MainWindow(QMainWindow):
         self._session.open_document(path)
         self._update_controls()
 
+    def open_text(self, text: str) -> None:
+        """Read ``text`` as a document, in the background."""
+        log.info("Opening pasted text (%d characters)", len(text))
+        self._doc_loading_name = "text"
+        self._session.open_text(text)
+        self._update_controls()
+
+    def _ask_for_text(self, initial: str, title: str = "New Text Document") -> None:
+        """Show the text dialog; read the text if the user chooses Read Aloud."""
+        dialog = TextInputDialog(self, text=initial, title=title)
+        accepted = dialog.exec() == TextInputDialog.DialogCode.Accepted
+        text = dialog.text()
+        dialog.deleteLater()
+        if accepted:
+            self.open_text(text)
+
+    @Slot()
+    def _edit_text(self) -> None:
+        if self._document is not None and self._document.text is not None:
+            self._ask_for_text(self._document.text, title="Edit Text")
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        """Accept drags that contain a PDF file."""
-        if _first_pdf(event.mimeData().urls()) is not None:
+        """Accept drags that contain a PDF file or plain text."""
+        mime = event.mimeData()
+        if _first_pdf(mime.urls()) is not None or (mime.hasText() and not mime.hasUrls()):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        """Open the first dropped PDF."""
-        path = _first_pdf(event.mimeData().urls())
+        """Open the first dropped PDF, or offer dropped text for reading."""
+        mime = event.mimeData()
+        path = _first_pdf(mime.urls())
         if path is not None:
             event.acceptProposedAction()
             self.open_file(path)
+        elif mime.hasText() and not mime.hasUrls():
+            event.acceptProposedAction()
+            # Show the dialog after the drop completes, not inside the drag handler.
+            text = mime.text()
+            QTimer.singleShot(0, lambda: self._ask_for_text(text))
 
     # ------------------------------------------------------ session events
 
@@ -331,15 +386,18 @@ class MainWindow(QMainWindow):
         self._document = document
         self._doc_loading_name = None
         self._view.set_document(document)
-        self.setWindowTitle(f"{document.document.path.name} - {APP_NAME}")
+        self.setWindowTitle(f"{document.display_name} - {APP_NAME}")
         self._view.highlight(self._session.position)
         self._update_controls()
 
     @Slot(object, str)
-    def _on_document_error(self, path: Path, message: str) -> None:
+    def _on_document_error(self, path: Path | None, message: str) -> None:
         self._doc_loading_name = None
         self._update_controls()
-        QMessageBox.warning(self, "Can't open this PDF", f"{path.name}\n\n{message}")
+        if path is None:
+            QMessageBox.warning(self, "Can't read this text", message)
+        else:
+            QMessageBox.warning(self, "Can't open this PDF", f"{path.name}\n\n{message}")
 
     @Slot(int)
     def _on_position_changed(self, index: int) -> None:
@@ -397,6 +455,11 @@ class MainWindow(QMainWindow):
         self._play_action.setIcon(self._pause_icon if playing else self._play_icon)
         self._play_action.setText("&Pause" if playing else "&Play")
         self._stop_action.setEnabled(state in (ReadingState.PLAYING, ReadingState.PAUSED))
+        self._edit_text_action.setEnabled(
+            self._document is not None
+            and self._document.text is not None
+            and state is not ReadingState.LOADING
+        )
         self._prev_action.setEnabled(has_doc and state is not ReadingState.LOADING)
         self._next_action.setEnabled(has_doc and state is not ReadingState.LOADING)
         self._voice_combo.setEnabled(model_ready)
@@ -406,6 +469,8 @@ class MainWindow(QMainWindow):
         if state is ReadingState.LOADING:
             if self._model_loading:
                 label = "Loading voice model..."
+            elif self._doc_loading_name == "text":
+                label = "Preparing text..."
             elif self._doc_loading_name:
                 label = f"Opening {self._doc_loading_name}..."
             else:
@@ -423,10 +488,13 @@ class MainWindow(QMainWindow):
         document = self._document
         if document is None:
             self._page_label.clear()
+            self._page_label.setVisible(True)
             self._sentence_label.clear()
             return
         index = self._session.position
         page = document.page_of(index) if 0 <= index < document.sentence_count else 1
+        # Pasted text has no pages, so its status bar shows only the sentence.
+        self._page_label.setVisible(document.is_paginated)
         self._page_label.setText(f"Page {page} of {document.page_count}")
         self._sentence_label.setText(f"Sentence {index + 1} of {document.sentence_count}")
 

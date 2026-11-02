@@ -1,7 +1,8 @@
-"""A document prepared for reading: the extracted PDF plus its spoken sentences."""
+"""A document prepared for reading: its spoken sentences plus where they came from."""
 
 import bisect
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from pdf_reader.pdf.models import Document
 from pdf_reader.text.segment import Segment
@@ -9,15 +10,23 @@ from pdf_reader.text.segment import Segment
 
 @dataclass(frozen=True)
 class ReadingDocument:
-    """An extracted PDF and the sentences that will be read aloud.
+    """Sentences to read aloud, from a PDF file or from pasted text.
 
     Attributes:
-        document: The source document with full layout information.
+        title: Display title.
         sentences: Spoken chunks in reading order; positions are indexes into this.
+        page_count: Number of pages (1 for pasted text).
+        path: The file the document was opened from, if any.
+        pdf: The extracted PDF with full layout information, for PDF documents.
+        text: The original text, for pasted-text documents.
     """
 
-    document: Document
+    title: str
     sentences: tuple[Segment, ...]
+    page_count: int = 1
+    path: Path | None = None
+    pdf: Document | None = None
+    text: str | None = None
     _page_starts: tuple[int, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -29,15 +38,27 @@ class ReadingDocument:
                 last_page = sentence.page
         object.__setattr__(self, "_page_starts", tuple(starts))
 
-    @property
-    def title(self) -> str:
-        """Return the document title."""
-        return self.document.title
+    @classmethod
+    def from_pdf(cls, pdf: Document, sentences: tuple[Segment, ...]) -> "ReadingDocument":
+        """Create a reading document for an extracted PDF."""
+        return cls(
+            title=pdf.title, sentences=sentences, page_count=pdf.page_count, path=pdf.path, pdf=pdf
+        )
+
+    @classmethod
+    def from_text(cls, text: str, sentences: tuple[Segment, ...]) -> "ReadingDocument":
+        """Create a reading document for pasted or typed text."""
+        return cls(title=text_title(text), sentences=sentences, text=text)
 
     @property
-    def page_count(self) -> int:
-        """Return the number of pages in the PDF."""
-        return self.document.page_count
+    def is_paginated(self) -> bool:
+        """Return whether the document has real pages (PDFs do; pasted text doesn't)."""
+        return self.pdf is not None
+
+    @property
+    def display_name(self) -> str:
+        """Return the file name for files, otherwise the title."""
+        return self.path.name if self.path is not None else self.title
 
     @property
     def sentence_count(self) -> int:
@@ -53,3 +74,18 @@ class ReadingDocument:
         pages = [self.sentences[i].page for i in self._page_starts]
         pos = bisect.bisect_left(pages, page)
         return self._page_starts[pos] if pos < len(pages) else None
+
+
+_TITLE_MAX_CHARS = 50
+
+
+def text_title(text: str) -> str:
+    """Make a short title from the first line of ``text``."""
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if not first_line:
+        return "Untitled text"
+    title = " ".join(first_line.split())
+    if len(title) <= _TITLE_MAX_CHARS:
+        return title
+    cut = title.rfind(" ", 0, _TITLE_MAX_CHARS)
+    return title[: cut if cut > 0 else _TITLE_MAX_CHARS].rstrip(",;:") + "\u2026"

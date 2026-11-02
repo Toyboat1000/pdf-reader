@@ -93,13 +93,16 @@ class DocumentView(QTextEdit):
         last_page = None
         last_block = None
         for sentence in document.sentences:
-            if sentence.page != last_page:
+            if document.is_paginated and sentence.page != last_page:
                 if not first:
                     cursor.insertBlock()
                 cursor.setBlockFormat(heading_block)
                 cursor.insertText(f"Page {sentence.page}", heading_char)
                 cursor.insertBlock(body_block, body_char)
                 last_page, last_block = sentence.page, sentence.block
+            elif first:
+                cursor.setBlockFormat(body_block)
+                last_block = sentence.block
             elif sentence.block != last_block:
                 cursor.insertBlock(body_block, body_char)
                 last_block = sentence.block

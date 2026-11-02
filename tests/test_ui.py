@@ -8,7 +8,7 @@ from typing import Any
 import pymupdf
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
-from PySide6.QtGui import QKeySequence, QTextCursor
+from PySide6.QtGui import QGuiApplication, QKeySequence, QTextCursor
 from pytestqt.qtbot import QtBot
 
 from pdf_reader.audio.playback import PlaybackController
@@ -19,6 +19,7 @@ from pdf_reader.tts.download import RemoteFile
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
 from pdf_reader.ui.main_window import MainWindow, _first_pdf
+from pdf_reader.ui.text_dialog import TextInputDialog
 from tests.fakes import FakeEngine, StreamFactory
 
 
@@ -27,7 +28,7 @@ def make_pdf(path: Path) -> Path:
     for page_number in range(2):
         page = doc.new_page()
         for i in range(3):
-            page.insert_text((72, 72 + 30 * i), f"Page {page_number} sentence {i}.")
+            page.insert_text((72, 150 + 30 * i), f"Page {page_number} sentence {i}.")
     doc.save(path)
     doc.close()
     return path
@@ -51,7 +52,8 @@ def window(qtbot: QtBot, tmp_path: Path) -> Iterator[MainWindow]:
     qtbot.addWidget(win)
     win.show()
     win.start()
-    qtbot.waitUntil(lambda: session.state is ReadingState.READY)
+    # The voice list is filled by a queued signal that can arrive just after READY.
+    qtbot.waitUntil(lambda: session.state is ReadingState.READY and win._voice_combo.count() > 0)
     yield win
     win.close()
 
@@ -204,3 +206,101 @@ def test_declining_model_download_leaves_app_usable(
     assert not win._play_action.isEnabled()
     assert not win._voice_combo.isEnabled()
     win.close()
+
+
+def test_text_dialog_requires_text(qtbot: QtBot) -> None:
+    dialog = TextInputDialog()
+    qtbot.addWidget(dialog)
+    assert not dialog._read_button.isEnabled()
+    dialog.accept()
+    assert dialog.result() != TextInputDialog.DialogCode.Accepted
+    dialog._editor.setPlainText("Hello there, reader.")
+    assert dialog._read_button.isEnabled()
+    assert dialog._count.text() == "3 words"
+    dialog.accept()
+    assert dialog.result() == TextInputDialog.DialogCode.Accepted
+    assert dialog.text() == "Hello there, reader."
+
+
+def test_text_dialog_paste_button(qtbot: QtBot) -> None:
+    QGuiApplication.clipboard().setText("From the clipboard.")
+    dialog = TextInputDialog(text="Start. ")
+    qtbot.addWidget(dialog)
+    dialog._paste()
+    assert dialog.text() == "Start. From the clipboard."
+
+
+def accept_dialog_with(monkeypatch: pytest.MonkeyPatch, text: str | None = None) -> list[str]:
+    """Make TextInputDialog.exec return Accepted, optionally replacing its text."""
+    seen: list[str] = []
+
+    def fake_exec(dialog: TextInputDialog) -> TextInputDialog.DialogCode:
+        seen.append(dialog.text())
+        if text is not None:
+            dialog._editor.setPlainText(text)
+        return TextInputDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(TextInputDialog, "exec", fake_exec)
+    return seen
+
+
+def test_new_text_document_is_read(
+    qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = accept_dialog_with(monkeypatch, "My Notes\n\nFirst point. Second point.")
+    window._new_text_action.trigger()
+    assert seen == [""]
+    qtbot.waitUntil(lambda: window._document is not None)
+    assert window.windowTitle().startswith("My Notes - ")
+    assert "Page 1" not in window._view.toPlainText()
+    assert window._view.toPlainText().startswith("My Notes")
+    assert not window._page_label.isVisible()
+    assert window._sentence_label.text() == "Sentence 1 of 3"
+    assert window._edit_text_action.isEnabled()
+    window._play_action.trigger()
+    assert window._session.state is ReadingState.PLAYING
+
+
+def test_paste_action_uses_clipboard(
+    qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    QGuiApplication.clipboard().setText("Copied from a web page.")
+    seen = accept_dialog_with(monkeypatch)
+    window._paste_action.trigger()
+    assert seen == ["Copied from a web page."]
+    qtbot.waitUntil(lambda: window._document is not None)
+    assert window._document is not None
+    assert window._document.text == "Copied from a web page."
+
+
+def test_edit_text_reopens_with_current_text(
+    qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    accept_dialog_with(monkeypatch, "Original text.")
+    window._new_text_action.trigger()
+    qtbot.waitUntil(lambda: window._document is not None)
+    seen = accept_dialog_with(monkeypatch, "Edited text. With two sentences.")
+    window._edit_text_action.trigger()
+    assert seen == ["Original text."]
+    qtbot.waitUntil(lambda: window._document is not None and window._document.sentence_count == 2)
+
+
+def test_edit_text_disabled_for_pdfs(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> None:
+    open_sample(qtbot, window, tmp_path)
+    assert not window._edit_text_action.isEnabled()
+    assert window._page_label.isVisible()
+
+
+def test_cancelled_text_dialog_changes_nothing(
+    qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(TextInputDialog, "exec", lambda _self: TextInputDialog.DialogCode.Rejected)
+    window._new_text_action.trigger()
+    qtbot.wait(50)
+    assert window._document is None
+
+
+def test_text_shortcuts(window: MainWindow) -> None:
+    assert window._new_text_action.shortcut() == QKeySequence(QKeySequence.StandardKey.New)
+    assert window._paste_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Paste)
+    assert window._edit_text_action.shortcut() == QKeySequence("Ctrl+E")

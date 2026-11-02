@@ -19,12 +19,15 @@ _PIXMAP_SIZE = 64  # Drawn large and scaled down, so it stays crisp on high-DPI 
 class Glyph(StrEnum):
     """Code points shared by Segoe Fluent Icons and Segoe MDL2 Assets."""
 
-    OPEN = ""
-    PLAY = ""
-    PAUSE = ""
-    STOP = ""
-    PREVIOUS = ""
-    NEXT = ""
+    OPEN = "\ue8e5"
+    PLAY = "\ue768"
+    PAUSE = "\ue769"
+    STOP = "\ue71a"
+    PREVIOUS = "\ue892"
+    NEXT = "\ue893"
+    NEW_TEXT = "\ue8a5"
+    PASTE = "\ue77f"
+    EDIT = "\ue70f"
 
 
 _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
@@ -34,6 +37,9 @@ _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
     Glyph.STOP: QStyle.StandardPixmap.SP_MediaStop,
     Glyph.PREVIOUS: QStyle.StandardPixmap.SP_MediaSkipBackward,
     Glyph.NEXT: QStyle.StandardPixmap.SP_MediaSkipForward,
+    Glyph.NEW_TEXT: QStyle.StandardPixmap.SP_FileIcon,
+    Glyph.PASTE: QStyle.StandardPixmap.SP_FileDialogDetailedView,
+    Glyph.EDIT: QStyle.StandardPixmap.SP_FileDialogContentsView,
 }
 
 

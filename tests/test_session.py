@@ -21,7 +21,7 @@ def make_pdf(path: Path, sentences_per_page: list[int]) -> Path:
     counter = 0
     for count in sentences_per_page:
         page = doc.new_page()
-        y = 72
+        y = 150  # Body area, clear of the header margin.
         for _ in range(count):
             page.insert_text((72, y), f"Sentence {counter}.")
             counter += 1
@@ -291,3 +291,46 @@ def test_model_download_reports_progress_and_finish(
     h.session.start_model_download()
     assert wait_until(lambda: h.listener.named("on_download_finished") != [])
     assert h.listener.named("on_download_progress") == [(5, 10), (10, 10)]
+
+
+def test_open_text_creates_unpaginated_document(h: Harness) -> None:
+    h.load_model()
+    before = len(h.listener.named("on_document_loaded"))
+    h.session.open_text("Pasted Title\n\nFirst sentence. Second sentence.")
+    assert wait_until(lambda: len(h.listener.named("on_document_loaded")) > before)
+    document = h.session.document
+    assert document is not None
+    assert not document.is_paginated
+    assert document.title == "Pasted Title"
+    assert document.text == "Pasted Title\n\nFirst sentence. Second sentence."
+    assert [s.text for s in document.sentences] == [
+        "Pasted Title",
+        "First sentence.",
+        "Second sentence.",
+    ]
+    assert h.session.state is ReadingState.READY
+    h.session.play()
+    assert wait_until(lambda: ("Pasted Title", "af_heart", 1.0) in h.engine.calls)
+
+
+def test_open_blank_text_reports_error(h: Harness) -> None:
+    h.load_model()
+    h.session.open_text("  • \n\n ---")
+    assert wait_until(lambda: h.listener.named("on_document_error") != [])
+    path, message = h.listener.named("on_document_error")[0]
+    assert path is None
+    assert "no text to read" in message
+    assert wait_until(lambda: h.session.state is ReadingState.READY)
+
+
+def test_text_replaces_pdf_document(h: Harness, pdf: Path) -> None:
+    h.load_model()
+    h.open(pdf)
+    h.session.play()
+    before = len(h.listener.named("on_document_loaded"))
+    h.session.open_text("Something else entirely.")
+    assert wait_until(lambda: len(h.listener.named("on_document_loaded")) > before)
+    assert h.session.document is not None
+    assert h.session.document.sentence_count == 1
+    assert h.session.position == 0
+    assert h.session.state is ReadingState.READY

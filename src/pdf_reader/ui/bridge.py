@@ -24,7 +24,7 @@ class SessionBridge(QObject, SessionListener):
     download_finished = Signal()
     download_failed = Signal(str, bool)  # message, cancelled
     document_loaded = Signal(object)  # ReadingDocument
-    document_error = Signal(object, str)  # Path, message
+    document_error = Signal(object, str)  # Path or None, message
     position_changed = Signal(int)
     playback_error = Signal(str)
 
@@ -56,7 +56,7 @@ class SessionBridge(QObject, SessionListener):
         """Emit :attr:`document_loaded`."""
         self.document_loaded.emit(document)
 
-    def on_document_error(self, path: Path, message: str) -> None:
+    def on_document_error(self, path: Path | None, message: str) -> None:
         """Emit :attr:`document_error`."""
         self.document_error.emit(path, message)
 

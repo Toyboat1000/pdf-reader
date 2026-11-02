@@ -88,8 +88,11 @@ class SessionListener:
     def on_document_loaded(self, document: ReadingDocument) -> None:
         """A document was opened and is ready to read."""
 
-    def on_document_error(self, path: Path, message: str) -> None:
-        """A document could not be opened; ``message`` is user-friendly."""
+    def on_document_error(self, path: Path | None, message: str) -> None:
+        """A document could not be opened; ``message`` is user-friendly.
+
+        ``path`` is ``None`` for pasted text.
+        """
 
     def on_position_changed(self, index: int) -> None:
         """The current sentence changed (by playback or by the user)."""
@@ -259,13 +262,7 @@ class ReadingSession(PlaybackListener):
         Reports ``on_document_loaded`` or ``on_document_error``. If another document
         is opened before this one finishes loading, this one's result is ignored.
         """
-        with self._lock:
-            self._controller.stop()
-            self._can_resume = False
-            self._doc_request += 1
-            request = self._doc_request
-            self._doc_loading = True
-            self._transition(ReadingState.LOADING)
+        request = self._begin_open()
 
         def task() -> None:
             try:
@@ -273,7 +270,7 @@ class ReadingSession(PlaybackListener):
                 sentences = tuple(self._pipeline.process_document(document))
                 if not sentences:
                     raise NoTextError(path)
-                result: ReadingDocument | str = ReadingDocument(document, sentences)
+                result: ReadingDocument | str = ReadingDocument.from_pdf(document, sentences)
             except PdfError as exc:
                 result = exc.user_message
             except Exception as exc:
@@ -283,7 +280,36 @@ class ReadingSession(PlaybackListener):
 
         self._start_thread("document-load", task)
 
-    def _finish_open(self, request: int, path: Path, result: ReadingDocument | str) -> None:
+    def open_text(self, text: str) -> None:
+        """Open pasted or typed text as a document, like :meth:`open_document`."""
+        request = self._begin_open()
+
+        def task() -> None:
+            try:
+                sentences = tuple(self._pipeline.process_text(text))
+                result: ReadingDocument | str = (
+                    ReadingDocument.from_text(text, sentences)
+                    if sentences
+                    else "There's no text to read. Paste or type some text first."
+                )
+            except Exception as exc:
+                log.exception("Unexpected error processing pasted text")
+                result = f"Something went wrong while preparing this text: {exc}"
+            self._finish_open(request, None, result)
+
+        self._start_thread("document-load", task)
+
+    def _begin_open(self) -> int:
+        """Stop playback and enter ``LOADING`` for a new document; return its request id."""
+        with self._lock:
+            self._controller.stop()
+            self._can_resume = False
+            self._doc_request += 1
+            self._doc_loading = True
+            self._transition(ReadingState.LOADING)
+            return self._doc_request
+
+    def _finish_open(self, request: int, path: Path | None, result: ReadingDocument | str) -> None:
         with self._lock:
             if request != self._doc_request:
                 return  # A newer open_document call superseded this one.

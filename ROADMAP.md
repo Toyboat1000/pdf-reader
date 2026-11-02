@@ -11,18 +11,17 @@ sentence; click to jump; play/pause/stop/previous/next; speed and voice controls
 preview; gap-free look-ahead playback; keyboard shortcuts; status bar; remembered
 settings; first-run model download with verification and retry.
 
-## 2. Smart text cleanup
-
-Make documents sound the way a person would read them:
+## 2. Smart text cleanup (done, v0.2.0)
 
 - Remove running headers, footers, and page numbers (detected by position and
   repetition across pages).
-- Handle footnotes and footnote markers.
+- Skip footnotes and remove footnote reference markers.
 - Read multi-column layouts in the correct order.
-- Join sentences that continue across page breaks.
+- Join sentences that continue across column and page breaks.
+- Also added: read pasted or typed text (File > New Text Document, Paste Text).
 
-The `pdf/` package already keeps bounding boxes and font sizes for this, and the
-`text/` pipeline is designed to take new cleanup steps.
+Possible refinements: an option to read footnotes instead of skipping them, and a way
+to turn cleanup off for unusual documents.
 
 ## 3. Reading position and bookmarks
 

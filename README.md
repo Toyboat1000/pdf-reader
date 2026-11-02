@@ -1,13 +1,15 @@
 # PDF Reader
 
-**Listen to your PDFs with natural-sounding AI voices, 100% offline and private.**
+**Listen to your PDFs and any text with natural-sounding AI voices, 100% offline and
+private.**
 
-PDF Reader is a free, open-source Windows desktop app that reads PDF documents aloud.
+PDF Reader is a free, open-source Windows desktop app that reads PDF documents, or any
+text you paste into it, aloud.
 It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-speech
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.1). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.2). See the [roadmap](ROADMAP.md) for what's next.
 
 ![PDF Reader reading a document, with the current sentence highlighted](docs/screenshot.png)
 
@@ -17,6 +19,11 @@ your documents never leave your PC. Think of it as a private alternative to Spee
   with friendly names such as "Heart (US Female)" and a **Preview** button.
 - **Runs offline.** After a one-time download of the voice model (about 354 MB), the
   app never needs the internet again.
+- **Smart text cleanup.** Page numbers, running headers and footers, and footnotes are
+  skipped; two-column pages are read column by column; and sentences that continue
+  across a column or page break are read as one sentence.
+- **Read any text.** Paste text from a web page, email, or anywhere else (Ctrl+V), or
+  type it in a new text document (Ctrl+N), and have it read aloud.
 - **Follow along.** The sentence being read is highlighted and kept in view.
 - **Click to jump.** Click any sentence to start reading from there.
 - **Smooth playback.** Upcoming sentences are prepared in the background, so there are
@@ -24,8 +31,8 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 - **Speed control.** 0.5x to 2.0x; changes apply from the next sentence without a
   pause.
 - **Simple controls.** Play/Pause, Stop, Previous/Next sentence, and keyboard shortcuts.
-- **Open PDFs your way.** Use File > Open, the toolbar, or drag and drop a file onto the
-  window.
+- **Open PDFs your way.** Use File > Open, the toolbar, or drag and drop a file (or
+  text) onto the window.
 - **Remembers your preferences.** Voice, speed, window size and position, and the last
   folder you opened.
 - **Friendly errors.** Password-protected, damaged, and scanned (image-only) PDFs are
@@ -39,6 +46,9 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 | Left arrow | Previous sentence |
 | Right arrow | Next sentence |
 | Ctrl+O | Open a PDF |
+| Ctrl+N | New text document (type or paste text) |
+| Ctrl+V | Paste text from the clipboard and read it |
+| Ctrl+E | Edit the current text document |
 
 ## Requirements
 
@@ -127,6 +137,7 @@ To try the app without a PDF of your own, generate a sample:
 
 ```powershell
 uv run python scripts/make_sample_pdf.py sample.pdf
+uv run python scripts/make_sample_pdf.py --layout layout-sample.pdf   # columns, footnotes
 ```
 
 ### Project layout
@@ -135,13 +146,13 @@ uv run python scripts/make_sample_pdf.py sample.pdf
 src/pdf_reader/
   config/   app name, file locations, settings, logging
   pdf/      PDF loading and text extraction (with page/position data)
-  text/     text-processing pipeline (small ordered steps)
+  text/     text pipeline: layout cleanup and text steps (small ordered steps)
   tts/      TTS engine interface, Kokoro engine, model download
   audio/    gap-free player and look-ahead generation queue
   core/     reading session: document, position, state machine
   ui/       all PySide6 code
 tests/      pytest suite with fakes for the engine and audio device
-scripts/    developer utilities
+scripts/    developer utilities (sample PDF generators)
 ```
 
 [CLAUDE.md](CLAUDE.md) documents the architecture and conventions in more detail.

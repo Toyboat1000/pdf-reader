@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+
+Smart text cleanup (roadmap step 2) and pasted-text documents.
+
+### Added
+
+- Page numbers in the top or bottom margin ("12", "- 4 -", "Page 3 of 10", "iv") are
+  no longer read.
+- Running headers and footers (text repeated in the page margins) are no longer read.
+- Footnotes at the bottom of the page are skipped, and footnote reference markers
+  (superscript numbers and symbols, including Unicode superscripts) are removed.
+- Two-column (and multi-column) pages are read column by column.
+- Sentences that continue across a column or page break are read as one sentence,
+  including words hyphenated across the break.
+- New Text Document (Ctrl+N), Paste Text (Ctrl+V), and Edit Text (Ctrl+E): type or
+  paste any text and have it read aloud. Text can also be dropped onto the window.
+- A layout sample PDF generator (`scripts/make_sample_pdf.py --layout`).
+
+### Changed
+
+- The PDF loader now keeps text spans with superscript detection.
+- Pasted-text documents have no page headings or page numbers in the status bar.
+
 ## [0.1.0] - 2026-11-02
 
 First working version (roadmap step 1).

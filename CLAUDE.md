@@ -21,7 +21,8 @@ uv run pdf-reader [file.pdf]    # run the app (also: uv run python -m pdf_reader
 uv run pytest                   # all tests, ~25 s, no sound card needed
 uv run ruff check .             # lint; must pass with no warnings
 uv run ruff format .            # format; run before committing
-uv run python scripts/make_sample_pdf.py sample.pdf   # multi-page test PDF
+uv run python scripts/make_sample_pdf.py sample.pdf            # simple test PDF
+uv run python scripts/make_sample_pdf.py --layout layout.pdf    # columns, footnotes
 ```
 
 Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`); commit `uv.lock`.
@@ -43,10 +44,17 @@ ui  ->  core  ->  audio  ->  tts
   font sizes). Raises `PdfError` subclasses carrying a `user_message`. Keep the
   position data: roadmap step 2 relies on it.
 - **text/**: `TextPipeline` runs ordered steps, each `list[Segment] -> list[Segment]`.
-  `Segment` carries text, page, block index, bbox, and `ends_sentence`. Add a step by
-  writing a function in `steps.py` (use `@text_step` for plain `str -> str`
-  transforms) and inserting it in `default_steps()` in `pipeline.py`. Cleanup steps go
-  before `split_sentences`.
+  `Segment` carries text, page, block index, bbox, `ends_sentence`, and (for PDFs) the
+  source `TextBlock` and page size. `layout.py` holds the layout cleanup steps (page
+  numbers, running headers/footers, footnotes and markers, column order, joining
+  sentences across blocks); `steps.py` holds character and sentence steps (use
+  `@text_step` for plain `str -> str` transforms). The order is set in
+  `default_steps()` in `pipeline.py`: layout steps first (they need each segment to be
+  exactly one PDF block), `order_columns` before `join_continued_blocks`,
+  `strip_superscript_markers` before `normalize_unicode`, hyphen repair before
+  whitespace normalization. Layout steps must leave segments without layout data
+  (pasted text) untouched and should err on the side of keeping text.
+  `text_segments()` splits pasted text into paragraphs.
 - **tts/**: `TtsEngine` ABC (`load`, `voices`, `synthesize`, `cancel`, plus optional
   model-file download hooks). `KokoroEngine` is the only implementation; model URLs,
   sizes, and SHA-256 hashes are pinned in `kokoro_engine.py`. `download.py` does
@@ -60,11 +68,15 @@ ui  ->  core  ->  audio  ->  tts
   regenerated chunks replace queued ones in place, so changes never cause a gap).
 - **core/**: `ReadingSession` is the only API the UI uses. Owns the state machine
   (IDLE, LOADING, READY, PLAYING, PAUSED), the document, and the position, and runs
-  model download, model loading, and PDF loading on background threads. Reports via
-  `SessionListener` callbacks from any thread.
+  model download, model loading, and document loading (`open_document` for PDFs,
+  `open_text` for pasted text) on background threads. Reports via `SessionListener`
+  callbacks from any thread. `ReadingDocument` is source-agnostic: `pdf` is set for
+  PDFs, `text` for pasted text (`is_paginated` tells them apart).
 - **ui/**: all Qt code. `SessionBridge` turns listener callbacks into Qt signals
   (queued onto the UI thread). `MainWindow`, `DocumentView`, `ModelDownloadDialog`,
-  `icons.py`, and `app.py` (start-up wiring).
+  `TextInputDialog` (type or paste text), `icons.py`, and `app.py` (start-up wiring).
+- **scripts/**: sample PDF generators. It is a package so tests can import the
+  builders (`tests/test_layout_sample.py` checks the layout sample end to end).
 
 ## Rules and conventions
 
@@ -97,5 +109,10 @@ ui  ->  core  ->  audio  ->  tts
   it on its dispatcher thread.
 - `QAbstractScrollArea` forwards viewport resizes to `resizeEvent`; `DocumentView`
   computes its margins from the widget width to avoid infinite recursion.
+- Test PDFs must keep body text out of the top and bottom 12% of the page, or
+  repeated first lines (e.g. "Sentence 0." and "Sentence 3." with digits ignored) are
+  treated as running headers.
+- Keep non-ASCII characters in code as escapes (for example `"\u2014"`); ruff flags
+  ambiguous literal characters (RUF001).
 - PyMuPDF 2.x pulls in `pymupdf-layout`, `pymupdf4llm`, and onnxruntime as
   dependencies even though we don't use their layout features.

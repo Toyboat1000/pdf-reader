@@ -166,3 +166,14 @@ def test_close_saves_settings(qtbot: QtBot, window: MainWindow, tmp_path: Path) 
     assert saved["voice"] == "am_adam"
     assert saved["last_folder"] == str(tmp_path)
     assert saved["window_geometry"]
+
+
+def test_wide_window_gets_reading_margins(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> None:
+    open_sample(qtbot, window, tmp_path)
+    for width in (1100, 1400, 700, 1250):
+        window.resize(width, 760)
+        qtbot.wait(20)
+        view = window._view
+        expected = max(0, (view.width() - 820) // 2)
+        assert view.viewportMargins().left() == expected
+        assert view.viewportMargins().right() == expected

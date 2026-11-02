@@ -10,7 +10,6 @@ from PySide6.QtGui import (
     QDesktopServices,
     QDragEnterEvent,
     QDropEvent,
-    QIcon,
     QKeySequence,
 )
 from PySide6.QtWidgets import (
@@ -20,7 +19,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSlider,
-    QStyle,
     QToolBar,
     QToolButton,
 )
@@ -34,6 +32,7 @@ from pdf_reader.tts.base import Voice
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.document_view import DocumentView
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
+from pdf_reader.ui.icons import Glyph, make_icon
 
 log = logging.getLogger(__name__)
 
@@ -122,13 +121,7 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------- set-up
 
     def _create_actions(self) -> None:
-        style = self.style()
-
-        def icon(pixmap: QStyle.StandardPixmap) -> QIcon:
-            return style.standardIcon(pixmap)
-
-        sp = QStyle.StandardPixmap
-        self._open_action = QAction(icon(sp.SP_DialogOpenButton), "&Open PDF...", self)
+        self._open_action = QAction(make_icon(Glyph.OPEN, self), "&Open PDF...", self)
         self._open_action.setShortcut(QKeySequence.StandardKey.Open)
         self._open_action.setToolTip("Open a PDF (Ctrl+O)")
         self._open_action.triggered.connect(self._choose_file)
@@ -137,23 +130,23 @@ class MainWindow(QMainWindow):
         self._exit_action.setShortcut(QKeySequence("Alt+F4"))
         self._exit_action.triggered.connect(self.close)
 
-        self._play_icon = icon(sp.SP_MediaPlay)
-        self._pause_icon = icon(sp.SP_MediaPause)
+        self._play_icon = make_icon(Glyph.PLAY, self)
+        self._pause_icon = make_icon(Glyph.PAUSE, self)
         self._play_action = QAction(self._play_icon, "&Play", self)
         self._play_action.setShortcut(QKeySequence(Qt.Key.Key_Space))
         self._play_action.setToolTip("Play / Pause (Space)")
         self._play_action.triggered.connect(self._session.toggle_play_pause)
 
-        self._stop_action = QAction(icon(sp.SP_MediaStop), "&Stop", self)
+        self._stop_action = QAction(make_icon(Glyph.STOP, self), "&Stop", self)
         self._stop_action.setToolTip("Stop")
         self._stop_action.triggered.connect(self._session.stop)
 
-        self._prev_action = QAction(icon(sp.SP_MediaSkipBackward), "P&revious Sentence", self)
+        self._prev_action = QAction(make_icon(Glyph.PREVIOUS, self), "P&revious Sentence", self)
         self._prev_action.setShortcut(QKeySequence(Qt.Key.Key_Left))
         self._prev_action.setToolTip("Previous sentence (Left arrow)")
         self._prev_action.triggered.connect(self._session.previous_sentence)
 
-        self._next_action = QAction(icon(sp.SP_MediaSkipForward), "&Next Sentence", self)
+        self._next_action = QAction(make_icon(Glyph.NEXT, self), "&Next Sentence", self)
         self._next_action.setShortcut(QKeySequence(Qt.Key.Key_Right))
         self._next_action.setToolTip("Next sentence (Right arrow)")
         self._next_action.triggered.connect(self._session.next_sentence)

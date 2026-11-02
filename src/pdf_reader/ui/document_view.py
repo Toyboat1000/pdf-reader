@@ -56,6 +56,7 @@ class DocumentView(QTextEdit):
         self._ends: list[int] = []
         self._current = -1
         self._press_pos: QPoint | None = None
+        self._side_margin = 0
         self._scroll_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
         self._scroll_animation.setDuration(250)
         self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -140,7 +141,7 @@ class DocumentView(QTextEdit):
 
     def _highlight_color(self) -> QColor:
         color = QColor(self.palette().color(QPalette.ColorRole.Highlight))
-        color.setAlpha(70)
+        color.setAlpha(90)
         return color
 
     def _cursor_for(self, index: int) -> QTextCursor:
@@ -203,7 +204,14 @@ class DocumentView(QTextEdit):
         super().mouseReleaseEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """Keep a comfortable reading width by adding side margins in wide windows."""
-        side = max(0, (event.size().width() - _MAX_TEXT_WIDTH) // 2)
-        self.setViewportMargins(side, 0, side, 0)
+        """Keep a comfortable reading width by adding side margins in wide windows.
+
+        Qt also routes the viewport's own resize events here, and changing the margins
+        resizes the viewport. The margins are therefore derived from the widget's
+        width (which they don't affect) and only applied when they change.
+        """
+        side = max(0, (self.width() - _MAX_TEXT_WIDTH) // 2)
+        if side != self._side_margin:
+            self._side_margin = side
+            self.setViewportMargins(side, 0, side, 0)
         super().resizeEvent(event)

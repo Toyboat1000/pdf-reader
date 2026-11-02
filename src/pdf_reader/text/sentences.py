@@ -57,6 +57,18 @@ def split_into_sentences(text: str) -> list[str]:
     return sentences
 
 
+def first_sentence_end(text: str) -> int | None:
+    """Return the index just after the first sentence boundary in ``text``, if any.
+
+    Works on raw text with line breaks; the boundary includes the whitespace after
+    the sentence-ending punctuation.
+    """
+    for match in _BOUNDARY.finditer(text):
+        if _is_boundary(text, match):
+            return match.end()
+    return None
+
+
 def _is_boundary(text: str, match: re.Match[str]) -> bool:
     following = text[match.end() :].lstrip(_OPENERS)
     if not following:

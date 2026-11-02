@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pdf_reader.pdf.models import Document, Page, TextBlock, TextLine
 from pdf_reader.text import Segment, TextPipeline, default_steps, document_segments, text_step
+from pdf_reader.text.pipeline import text_segments
 from pdf_reader.text.steps import (
     drop_unspeakable,
     fix_hyphenated_line_breaks,
@@ -9,6 +10,7 @@ from pdf_reader.text.steps import (
     normalize_whitespace,
     split_long_sentences,
     split_sentences,
+    strip_superscript_markers,
 )
 
 
@@ -36,7 +38,7 @@ def make_document(*pages: list[list[str]]) -> Document:
 
 
 def test_normalize_unicode_expands_ligatures_and_drops_invisibles() -> None:
-    result = normalize_unicode([seg("ﬁne e­xam​ple")])
+    result = normalize_unicode([seg("\ufb01ne e\u00adxam\u200bple")])
     assert texts(result) == ["fine example"]
 
 
@@ -58,7 +60,7 @@ def test_normalize_whitespace() -> None:
 
 
 def test_drop_unspeakable() -> None:
-    result = drop_unspeakable([seg("•"), seg("---"), seg("Real text"), seg("42")])
+    result = drop_unspeakable([seg("\u2022"), seg("---"), seg("Real text"), seg("42")])
     assert texts(result) == ["Real text", "42"]
 
 
@@ -98,7 +100,7 @@ def test_document_segments_number_blocks_across_pages() -> None:
 def test_default_pipeline_end_to_end() -> None:
     doc = make_document(
         [["A Title"], ["The first sen-", "tence is here. Dr. Who", "arrived later."]],
-        [["•"], ["Page two text."]],
+        [["\u2022"], ["Page two text."]],
     )
     result = TextPipeline().process_document(doc)
     assert [(s.text, s.page) for s in result] == [
@@ -124,3 +126,65 @@ def test_adding_a_custom_step_is_trivial() -> None:
 def test_empty_pipeline_is_identity() -> None:
     segments = [seg("unchanged  text")]
     assert TextPipeline([]).run(segments) == segments
+
+
+def test_document_segments_keep_layout_source() -> None:
+    doc = make_document([["Line one", "line two"]])
+    (segment,) = document_segments(doc)
+    assert segment.source is doc.pages[0].blocks[0]
+    assert segment.page_size == (595, 842)
+
+
+def test_strip_superscript_markers() -> None:
+    result = strip_superscript_markers(
+        [seg("A claim\u00b9 and another.\u00b2\u00b3 But E = mc\u00b2 and x\u00b2 stay.")]
+    )
+    assert texts(result) == ["A claim and another. But E = mc\u00b2 and x\u00b2 stay."]
+
+
+def test_superscript_markers_go_before_normalization() -> None:
+    result = TextPipeline().run([seg("A claim\u00b9 is made.")])
+    assert texts(result) == ["A claim is made."]
+
+
+class TestTextSegments:
+    def test_blank_lines_separate_paragraphs(self) -> None:
+        result = text_segments("First paragraph.\n\nSecond paragraph.\r\n\r\nThird.")
+        assert [(s.text, s.page, s.block) for s in result] == [
+            ("First paragraph.", 1, 0),
+            ("Second paragraph.", 1, 1),
+            ("Third.", 1, 2),
+        ]
+
+    def test_hard_wrapped_lines_stay_together(self) -> None:
+        text = (
+            "This paragraph was wrapped by an email program at about seventy\n"
+            "characters, so its lines break in the middle of sentences and\n"
+            "should be read as one paragraph."
+        )
+        assert len(text_segments(text)) == 1
+
+    def test_heading_line_is_its_own_paragraph(self) -> None:
+        result = text_segments("Introduction\nThe study begins here and continues.")
+        assert texts(result) == ["Introduction", "The study begins here and continues."]
+
+    def test_sentence_end_breaks_paragraph(self) -> None:
+        text = (
+            "A long first line that ends with a full stop and is clearly a sentence.\n"
+            "Another long line that is a separate paragraph in the original text here."
+        )
+        assert len(text_segments(text)) == 2
+
+    def test_empty_text(self) -> None:
+        assert text_segments("  \n\n \n") == []
+
+
+def test_process_text_end_to_end() -> None:
+    text = "Heading\n\nDr. Smith arrived. He sat down\nand began to read aloud\u00b9.\n\n\u2022"
+    result = TextPipeline().process_text(text)
+    assert texts(result) == [
+        "Heading",
+        "Dr. Smith arrived.",
+        "He sat down and began to read aloud.",
+    ]
+    assert all(s.page == 1 for s in result)

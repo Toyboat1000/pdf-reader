@@ -31,8 +31,25 @@ def text_step(func: Callable[[str], str]) -> TextStep:
     return step
 
 
+# Unicode superscript digits used as footnote references: after a word of 3+ letters
+# ("claim¹") or after closing punctuation ("end.²"). "x²" and "mc²" are kept.
+_SUPERSCRIPT_MARKER = re.compile(
+    r"(?:(?<=[A-Za-z]{3})|(?<=[.,;:)\]\"'\u201d\u2019]))[\u00b9\u00b2\u00b3\u2070\u2074-\u2079]+"
+)
+
+
+@text_step
+def strip_superscript_markers(text: str) -> str:
+    """Remove footnote references written with Unicode superscript digits.
+
+    Must run before :func:`normalize_unicode`, which would turn "claim\u00b9" into
+    "claim1".
+    """
+    return _SUPERSCRIPT_MARKER.sub("", text)
+
+
 # Soft hyphens, zero-width spaces/joiners, and the byte-order mark.
-_INVISIBLE = re.compile("[­​‌‍⁠﻿]")
+_INVISIBLE = re.compile("[\u00ad\u200b\u200c\u200d\u2060\ufeff]")
 
 
 @text_step

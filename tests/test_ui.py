@@ -15,7 +15,9 @@ from pdf_reader.audio.playback import PlaybackController
 from pdf_reader.audio.player import AudioPlayer, PlayerListener
 from pdf_reader.config.settings import Settings
 from pdf_reader.core.session import ReadingSession, ReadingState
+from pdf_reader.tts.download import RemoteFile
 from pdf_reader.ui.bridge import SessionBridge
+from pdf_reader.ui.download_dialog import ModelDownloadDialog
 from pdf_reader.ui.main_window import MainWindow, _first_pdf
 from tests.fakes import FakeEngine, StreamFactory
 
@@ -177,3 +179,28 @@ def test_wide_window_gets_reading_margins(qtbot: QtBot, window: MainWindow, tmp_
         expected = max(0, (view.width() - 820) // 2)
         assert view.viewportMargins().left() == expected
         assert view.viewportMargins().right() == expected
+
+
+def test_declining_model_download_leaves_app_usable(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class NeedsDownload(FakeEngine):
+        def missing_files(self) -> list[Any]:
+            return [RemoteFile("model.onnx", "http://unused", 354_000_000, "0" * 64)]
+
+    monkeypatch.setattr(
+        "pdf_reader.ui.main_window.ModelDownloadDialog.exec",
+        lambda _self: ModelDownloadDialog.DialogCode.Rejected,
+    )
+    bridge = SessionBridge()
+    session = ReadingSession(NeedsDownload(), bridge, voice="af_heart")
+    win = MainWindow(session, bridge, Settings(), tmp_path / "s.json")
+    qtbot.addWidget(win)
+    win.show()
+    win.start()
+    assert session.state is ReadingState.IDLE
+    assert "Download Voice Model" in win._state_label.text()
+    assert win._download_action.isVisible()
+    assert not win._play_action.isEnabled()
+    assert not win._voice_combo.isEnabled()
+    win.close()

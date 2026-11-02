@@ -46,7 +46,7 @@ class ModelDownloadDialog(QDialog):
         self._downloading = False
         self.setWindowTitle(f"{APP_NAME}: Voice model download")
         self.setModal(True)
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
 
         intro = QLabel(
             f"<h3>One-time download</h3>"
@@ -80,6 +80,14 @@ class ModelDownloadDialog(QDialog):
         self._buttons.addButton(self._close_button, QDialogButtonBox.ButtonRole.RejectRole)
         self._start_button.clicked.connect(self._start)
         self._close_button.clicked.connect(self._close_or_cancel)
+
+        # Reserve room for the progress bar and a two-line status from the start, so
+        # the dialog never has to resize (which squeezes word-wrapped text).
+        for widget in (self._progress, self._status):
+            policy = widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            widget.setSizePolicy(policy)
+        self._status.setMinimumHeight(self._status.fontMetrics().lineSpacing() * 2 + 4)
 
         layout = QVBoxLayout(self)
         layout.addWidget(intro)

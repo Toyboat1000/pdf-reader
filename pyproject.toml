@@ -1,0 +1,83 @@
+[project]
+name = "pdf-reader"
+version = "0.1.0"
+description = "Read PDF documents aloud with natural-sounding AI voices, 100% locally and offline."
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Luke Oberlin" }]
+requires-python = ">=3.12,<3.14"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "kokoro-onnx>=0.6.1,<0.7",
+    "numpy>=2.0",
+    "pymupdf>=2.0",
+    "pyside6>=6.12",
+    "sounddevice>=0.5",
+]
+
+[project.gui-scripts]
+pdf-reader = "pdf_reader.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0",
+    "pytest-qt>=4.5",
+    "ruff>=0.17",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pdf_reader"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+    "D",   # pydocstyle
+    "T20", # no print statements
+    "PTH", # prefer pathlib
+]
+ignore = [
+    "D105", # magic methods don't need docstrings
+    "D107", # __init__ is documented on the class
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pep8-naming]
+# Qt event handlers and overrides use camelCase names.
+extend-ignore-names = ["closeEvent", "dragEnterEvent", "dropEvent", "mouseReleaseEvent", "mouseMoveEvent", "resizeEvent"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]

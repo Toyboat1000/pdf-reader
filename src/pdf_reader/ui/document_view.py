@@ -12,7 +12,6 @@ from PySide6.QtGui import (
     QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
-    QTextDocument,
     QTextFormat,
 )
 from PySide6.QtWidgets import QTextEdit, QWidget
@@ -70,10 +69,9 @@ class DocumentView(QTextEdit):
         self._ends.clear()
         self.setExtraSelections([])
 
-        text_doc = QTextDocument(self)
+        text_doc = self.document()
+        text_doc.clear()
         text_doc.setDefaultFont(self.font())
-        text_doc.setDocumentMargin(24)
-        text_doc.setUndoRedoEnabled(False)
         cursor = QTextCursor(text_doc)
         cursor.beginEditBlock()
 
@@ -112,10 +110,6 @@ class DocumentView(QTextEdit):
             self._ends.append(cursor.position())
 
         cursor.endEditBlock()
-        old = self.document()
-        self.setDocument(text_doc)
-        if old.parent() is self:
-            old.deleteLater()
         self.verticalScrollBar().setValue(0)
 
     def clear_document(self) -> None:

@@ -18,7 +18,7 @@ install can't find it, open a new one (winget's install folder is
 ```powershell
 uv sync                         # install/update the environment from uv.lock
 uv run pdf-reader [file.pdf]    # run the app (also: uv run python -m pdf_reader)
-uv run pytest                   # all tests, ~15 s, no model or sound card needed
+uv run pytest                   # all tests, ~25 s, no sound card needed
 uv run ruff check .             # lint; must pass with no warnings
 uv run ruff format .            # format; run before committing
 uv run python scripts/make_sample_pdf.py sample.pdf   # multi-page test PDF
@@ -83,7 +83,8 @@ ui  ->  core  ->  audio  ->  tts
 - Never commit model files (`*.onnx`, `voices-*.bin`); they are git-ignored.
 - Tests: use the fakes in `tests/fakes.py` (`FakeEngine`, `StreamFactory`/`FakeStream`,
   `Recorder`, `wait_until`). Unit tests must not need the real model, the network, or
-  a sound card. Qt tests run off-screen (`tests/conftest.py`).
+  a sound card. Qt tests run off-screen (`tests/conftest.py`). The only exception is
+  `tests/test_kokoro_integration.py`, which skips itself when the model is missing.
 - Commits: small and logical, imperative subject line.
 
 ## Gotchas

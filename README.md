@@ -119,7 +119,9 @@ uv run ruff format .          # format
 ```
 
 The tests use a fake TTS engine and a fake audio device, so they run in seconds on any
-machine, including CI. Qt tests run off-screen.
+machine, including CI. Qt tests run off-screen. A few integration tests in
+`tests/test_kokoro_integration.py` use the real voice model; they are skipped
+automatically until the model has been downloaded (by running the app once).
 
 To try the app without a PDF of your own, generate a sample:
 

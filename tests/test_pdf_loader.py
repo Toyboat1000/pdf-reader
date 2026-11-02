@@ -115,3 +115,23 @@ def test_missing_file(tmp_path: Path) -> None:
 def test_directory_is_not_a_file(tmp_path: Path) -> None:
     with pytest.raises(PdfNotFoundError):
         load_pdf(tmp_path)
+
+
+def test_superscript_spans_are_detected(tmp_path: Path) -> None:
+    path = tmp_path / "sup.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    width = pymupdf.get_text_length("A claim", "helv", 11)
+    page.insert_text((72, 300), "A claim", fontsize=11, fontname="helv")
+    page.insert_text((72 + width, 296), "7", fontsize=7, fontname="helv")
+    page.insert_text((80 + width, 300), " follows.", fontsize=11, fontname="helv")
+    doc.save(path)
+    doc.close()
+
+    line = load_pdf(path).pages[0].blocks[0].lines[0]
+    assert [(s.text.strip(), s.superscript) for s in line.spans] == [
+        ("A claim", False),
+        ("7", True),
+        ("follows.", False),
+    ]
+    assert line.text == "".join(s.text for s in line.spans)

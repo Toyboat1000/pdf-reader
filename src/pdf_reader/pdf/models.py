@@ -12,6 +12,22 @@ type BBox = tuple[float, float, float, float]
 
 
 @dataclass(frozen=True, slots=True)
+class TextSpan:
+    """A run of text in a single font and position within a line.
+
+    Attributes:
+        text: The span's text.
+        font_size: Font size in points.
+        superscript: True if the span is raised and/or flagged as superscript, as
+            footnote markers usually are.
+    """
+
+    text: str
+    font_size: float
+    superscript: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class TextLine:
     """One line of text as laid out on the page.
 
@@ -19,11 +35,14 @@ class TextLine:
         text: The line's text, spans concatenated.
         bbox: The line's bounding box.
         font_size: Largest font size used on the line, in points.
+        spans: The spans making up ``text``, in order. May be empty for lines built
+            by hand (for example in tests).
     """
 
     text: str
     bbox: BBox
     font_size: float
+    spans: tuple[TextSpan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

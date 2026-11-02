@@ -8,7 +8,7 @@ from pdf_reader.pdf.errors import (
     PdfNotFoundError,
 )
 from pdf_reader.pdf.loader import load_pdf
-from pdf_reader.pdf.models import BBox, Document, Page, TextBlock, TextLine
+from pdf_reader.pdf.models import BBox, Document, Page, TextBlock, TextLine, TextSpan
 
 __all__ = [
     "BBox",
@@ -21,5 +21,6 @@ __all__ = [
     "PdfNotFoundError",
     "TextBlock",
     "TextLine",
+    "TextSpan",
     "load_pdf",
 ]

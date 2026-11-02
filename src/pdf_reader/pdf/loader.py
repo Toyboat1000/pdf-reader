@@ -7,7 +7,7 @@ from typing import Any
 import pymupdf
 
 from pdf_reader.pdf.errors import CorruptPdfError, EncryptedPdfError, NoTextError, PdfNotFoundError
-from pdf_reader.pdf.models import BBox, Document, Page, TextBlock, TextLine
+from pdf_reader.pdf.models import BBox, Document, Page, TextBlock, TextLine, TextSpan
 
 log = logging.getLogger(__name__)
 
@@ -90,12 +90,32 @@ def _extract_page(page: pymupdf.Page) -> Page:
 
 
 def _make_line(raw_line: dict[str, Any]) -> TextLine | None:
-    spans = raw_line.get("spans", [])
-    text = "".join(span.get("text", "") for span in spans)
+    raw_spans = raw_line.get("spans", [])
+    text = "".join(span.get("text", "") for span in raw_spans)
     if not text.strip():
         return None
-    font_size = max((float(span.get("size", 0.0)) for span in spans), default=0.0)
-    return TextLine(text=text, bbox=_bbox(raw_line["bbox"]), font_size=font_size)
+    font_size = max((float(span.get("size", 0.0)) for span in raw_spans), default=0.0)
+    # The baseline of the line's main (largest) text, to spot raised spans.
+    main = max(raw_spans, key=lambda span: float(span.get("size", 0.0)))
+    baseline = float(main.get("origin", (0.0, 0.0))[1])
+    spans = tuple(
+        TextSpan(
+            text=span.get("text", ""),
+            font_size=float(span.get("size", 0.0)),
+            superscript=_is_superscript(span, font_size, baseline),
+        )
+        for span in raw_spans
+    )
+    return TextLine(text=text, bbox=_bbox(raw_line["bbox"]), font_size=font_size, spans=spans)
+
+
+def _is_superscript(span: dict[str, Any], line_size: float, baseline: float) -> bool:
+    """Return whether a span is superscript: flagged by MuPDF, or small and raised."""
+    if int(span.get("flags", 0)) & pymupdf.TEXT_FONT_SUPERSCRIPT:
+        return True
+    size = float(span.get("size", 0.0))
+    origin_y = float(span.get("origin", (0.0, baseline))[1])
+    return size <= 0.8 * line_size and origin_y < baseline - 0.15 * line_size
 
 
 def _bbox(values: Any) -> BBox:

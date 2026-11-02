@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+Reading position and bookmarks (roadmap step 3).
+
+### Added
+
+- Each PDF remembers where you stopped reading. Reopening it continues at that
+  sentence, with a banner offering "Start from the beginning". Finished documents
+  start from the beginning next time.
+- Documents are recognised by their contents, so positions and bookmarks survive moving
+  or renaming the file. Saved locations also keep the start of the sentence's text, so
+  they stay correct if a future version splits text differently.
+- Bookmarks: add (Ctrl+B), rename (F2), remove (Delete), and jump to them from the
+  Bookmarks panel (Ctrl+Shift+B). Bookmarked sentences are underlined.
+- File > Open Recent lists recently read PDFs.
+- The window layout, including the Bookmarks panel, is remembered.
+- Positions and bookmarks are stored in `%APPDATA%\PDF Reader\library.json`.
+
 ## [0.2.0] - 2026-11-02
 
 Smart text cleanup (roadmap step 2) and pasted-text documents.

@@ -9,9 +9,9 @@ It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-s
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.2). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.3). See the [roadmap](ROADMAP.md) for what's next.
 
-![PDF Reader reading a document, with the current sentence highlighted](docs/screenshot.png)
+![PDF Reader resuming a two-column document, with bookmarks and the current sentence highlighted](docs/screenshot.png)
 
 ## Features
 
@@ -24,6 +24,12 @@ your documents never leave your PC. Think of it as a private alternative to Spee
   across a column or page break are read as one sentence.
 - **Read any text.** Paste text from a web page, email, or anywhere else (Ctrl+V), or
   type it in a new text document (Ctrl+N), and have it read aloud.
+- **Picks up where you left off.** Reopen a PDF and it continues at the sentence where
+  you stopped, even if the file was moved or renamed (with a one-click "Start from the
+  beginning").
+- **Bookmarks.** Bookmark any sentence (Ctrl+B), name your bookmarks, and jump back to
+  them from the Bookmarks panel (Ctrl+Shift+B).
+- **Recent documents.** File > Open Recent brings back the PDFs you were reading.
 - **Follow along.** The sentence being read is highlighted and kept in view.
 - **Click to jump.** Click any sentence to start reading from there.
 - **Smooth playback.** Upcoming sentences are prepared in the background, so there are
@@ -33,8 +39,8 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 - **Simple controls.** Play/Pause, Stop, Previous/Next sentence, and keyboard shortcuts.
 - **Open PDFs your way.** Use File > Open, the toolbar, or drag and drop a file (or
   text) onto the window.
-- **Remembers your preferences.** Voice, speed, window size and position, and the last
-  folder you opened.
+- **Remembers your preferences.** Voice, speed, window layout, and the last folder you
+  opened.
 - **Friendly errors.** Password-protected, damaged, and scanned (image-only) PDFs are
   explained clearly instead of crashing the app.
 
@@ -49,6 +55,8 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 | Ctrl+N | New text document (type or paste text) |
 | Ctrl+V | Paste text from the clipboard and read it |
 | Ctrl+E | Edit the current text document |
+| Ctrl+B | Bookmark the current sentence |
+| Ctrl+Shift+B | Show or hide the Bookmarks panel |
 
 ## Requirements
 
@@ -92,6 +100,7 @@ Python and all dependencies for you.
 | What | Location |
 | --- | --- |
 | Settings | `%APPDATA%\PDF Reader\settings.json` |
+| Reading positions, bookmarks, recent files | `%APPDATA%\PDF Reader\library.json` |
 | Voice model | `%LOCALAPPDATA%\PDF Reader\models\` |
 | Log files | `%LOCALAPPDATA%\PDF Reader\logs\` (also via **Help > Open Log Folder**) |
 
@@ -147,6 +156,7 @@ src/pdf_reader/
   config/   app name, file locations, settings, logging
   pdf/      PDF loading and text extraction (with page/position data)
   text/     text pipeline: layout cleanup and text steps (small ordered steps)
+  library/  remembered documents: reading positions, bookmarks, recent files
   tts/      TTS engine interface, Kokoro engine, model download
   audio/    gap-free player and look-ahead generation queue
   core/     reading session: document, position, state machine

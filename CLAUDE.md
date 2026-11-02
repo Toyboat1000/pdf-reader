@@ -35,6 +35,7 @@ Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`); commit `uv.lock`
 ui  ->  core  ->  audio  ->  tts
           |         \-> config
           +-> text -> pdf
+          +-> library -> text (Segment)
 ```
 
 - **config/**: `constants.py` (APP_NAME, version), `paths.py` (%APPDATA% for
@@ -66,6 +67,13 @@ ui  ->  core  ->  audio  ->  tts
   with an `epoch` counter (bumped on seek/stop/preview; stale audio discarded and
   in-flight synthesis cancelled) and a `params_version` counter (voice/speed changes;
   regenerated chunks replace queued ones in place, so changes never cause a gap).
+- **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
+  reading position, bookmarks) in `library.json`, thread-safe, written atomically by
+  `flush()` (the session flushes on pause, stop, document switch, bookmark changes,
+  and shutdown; `save_if_due()` throttles writes during reading). Documents are keyed
+  by `file_id()` (SHA-256 of the file). Locations are `Anchor`s (index, page, start of
+  the sentence text); `resolve()` finds them again even if text processing changes,
+  and the session re-anchors bookmarks on open. Pasted text is never stored.
 - **core/**: `ReadingSession` is the only API the UI uses. Owns the state machine
   (IDLE, LOADING, READY, PLAYING, PAUSED), the document, and the position, and runs
   model download, model loading, and document loading (`open_document` for PDFs,
@@ -74,7 +82,8 @@ ui  ->  core  ->  audio  ->  tts
   PDFs, `text` for pasted text (`is_paginated` tells them apart).
 - **ui/**: all Qt code. `SessionBridge` turns listener callbacks into Qt signals
   (queued onto the UI thread). `MainWindow`, `DocumentView`, `ModelDownloadDialog`,
-  `TextInputDialog` (type or paste text), `icons.py`, and `app.py` (start-up wiring).
+  `TextInputDialog` (type or paste text), `BookmarksPanel` (dock widget),
+  `ResumeBanner`, `icons.py`, and `app.py` (start-up wiring).
 - **scripts/**: sample PDF generators. It is a package so tests can import the
   builders (`tests/test_layout_sample.py` checks the layout sample end to end).
 

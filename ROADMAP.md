@@ -23,10 +23,16 @@ settings; first-run model download with verification and retry.
 Possible refinements: an option to read footnotes instead of skipping them, and a way
 to turn cleanup off for unusual documents.
 
-## 3. Reading position and bookmarks
+## 3. Reading position and bookmarks (done, v0.3.0)
 
-- Remember the reading position for each document and offer to resume.
-- Add, list, and jump to bookmarks.
+- Remember the reading position for each PDF (identified by content, so moving or
+  renaming the file doesn't matter) and resume there, with a "Start from the
+  beginning" option.
+- Add, name, list, remove, and jump to bookmarks; bookmarked sentences are underlined.
+- Also added: File > Open Recent.
+
+Pasted text is deliberately not saved to disk, so it has no saved position or
+bookmarks.
 
 ## 4. OCR for scanned PDFs
 

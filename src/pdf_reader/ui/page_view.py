@@ -193,8 +193,8 @@ class PageView(QAbstractScrollArea):
         for page, (x0, y0, x1, y1) in self._word_map.sentence_lines(sentence):
             rect = self._page_rect(page - 1)
             band = (y1 - y0) * self._zoom
-            pad_y = band * 0.28
-            pad_x = band * 0.28
+            pad_y = band * 0.14  # Hug the text: just enough to clear ascenders and descenders.
+            pad_x = band * 0.16
             pills.append(
                 QRectF(
                     rect.left() + x0 * self._zoom - pad_x,
@@ -217,12 +217,12 @@ class PageView(QAbstractScrollArea):
     ) -> None:
         """Draw rounded, evenly sized highlight pills with a soft glow."""
         for pill in pills:
-            radius = pill.height() / 2
+            radius = pill.height() * 0.28  # Softly rounded corners, not a full capsule.
             glow = QColor(accent)
             glow.setAlphaF(0.10 * opacity)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(glow)
-            painter.drawRoundedRect(pill.adjusted(-3, -3, 3, 3), radius + 3, radius + 3)
+            painter.drawRoundedRect(pill.adjusted(-2, -2, 2, 2), radius + 2, radius + 2)
             top = QColor(accent).lighter(115)
             top.setAlphaF(fill * opacity)
             bottom = QColor(accent)

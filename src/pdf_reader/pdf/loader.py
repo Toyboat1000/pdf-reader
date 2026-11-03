@@ -1,6 +1,8 @@
 """Load a PDF with PyMuPDF and extract its text with layout information."""
 
+import hashlib
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,8 @@ from pdf_reader.pdf.models import (
     TextLine,
     TextSpan,
 )
-from pdf_reader.pdf.ocr import ocr_available, recognize_page
+from pdf_reader.pdf.ocr import build_page_text, ocr_available, recognize_pages
+from pdf_reader.pdf.ocr_cache import OcrCache
 
 type ProgressCallback = Callable[[int, int], None]
 
@@ -28,7 +31,13 @@ log = logging.getLogger(__name__)
 _TEXT_FLAGS = pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_MEDIABOX_CLIP
 
 
-def load_pdf(path: Path, progress: ProgressCallback | None = None) -> Document:
+def load_pdf(
+    path: Path,
+    progress: ProgressCallback | None = None,
+    *,
+    ocr_cache: OcrCache | None = None,
+    file_hash: str | None = None,
+) -> Document:
     """Open a PDF and extract all text page by page in reading order.
 
     This is blocking and can take a while for large files; call it off the UI thread.
@@ -37,8 +46,11 @@ def load_pdf(path: Path, progress: ProgressCallback | None = None) -> Document:
 
     Args:
         path: The PDF file to read.
-        progress: Called with ``(pages_done, page_count)`` while scanned pages are
-            being recognized, which can take a moment per page.
+        progress: Called with ``(pages_done, pages_total)`` while scanned pages are
+            being recognized.
+        ocr_cache: Where recognized text is saved and reused; without it, scanned
+            pages are recognized every time.
+        file_hash: SHA-256 of the file, if already known (saves hashing it again).
 
     Returns:
         The extracted document.
@@ -69,18 +81,54 @@ def load_pdf(path: Path, progress: ProgressCallback | None = None) -> Document:
         if pdf.page_count == 0:
             raise CorruptPdfError(path)
         try:
-            pages = tuple(_extract_page(page, progress) for page in pdf)
+            pages = [_extract_page(page) for page in pdf]
             title = _title(pdf.metadata, path)
         except Exception as exc:
             log.warning("Failed to extract text from %s", path, exc_info=True)
             raise CorruptPdfError(path) from exc
 
-    document = Document(path=path, title=title, pages=pages)
+    pages = _recognize_scanned_pages(path, pages, progress, ocr_cache, file_hash)
+    document = Document(path=path, title=title, pages=tuple(pages))
     if not document.has_text:
         scanned = any(page.blocks == () and page.has_images for page in pages)
         raise NoTextError(path, scanned=scanned, ocr_available=ocr_available())
     log.info("Loaded %s: %d pages", path, document.page_count)
     return document
+
+
+def _recognize_scanned_pages(
+    path: Path,
+    pages: list[Page],
+    progress: ProgressCallback | None,
+    cache: OcrCache | None,
+    file_hash: str | None,
+) -> list[Page]:
+    """OCR every scanned page (in parallel), reusing and updating saved results."""
+    scanned = [p.number for p in pages if p.has_images and not p.blocks]
+    if not scanned or not ocr_available():
+        return pages
+    data = path.read_bytes()
+    if cache is not None and file_hash is None:
+        file_hash = hashlib.sha256(data).hexdigest()
+    saved = cache.load(file_hash) if cache is not None and file_hash else {}
+    missing = [n for n in scanned if n not in saved]
+    if missing:
+        started = time.perf_counter()
+        saved.update(recognize_pages(data, missing, progress))
+        log.info("OCR of %d page(s) took %.1fs", len(missing), time.perf_counter() - started)
+        if cache is not None and file_hash:
+            cache.save(file_hash, saved)
+    else:
+        log.info("Using saved OCR results for %d page(s)", len(scanned))
+    result = []
+    for page in pages:
+        if page.number in saved and page.has_images and not page.blocks:
+            blocks, words = build_page_text(saved[page.number])
+            page = Page(
+                page.number, page.width, page.height, blocks, words, has_images=True, ocr=True
+            )
+        result.append(page)
+    return result
 
 
 def _title(metadata: dict[str, Any] | None, path: Path) -> str:
@@ -90,7 +138,7 @@ def _title(metadata: dict[str, Any] | None, path: Path) -> str:
     return path.stem
 
 
-def _extract_page(page: pymupdf.Page, progress: ProgressCallback | None = None) -> Page:
+def _extract_page(page: pymupdf.Page) -> Page:
     # sort=True orders blocks top-to-bottom, then left-to-right.
     data = page.get_text("dict", flags=_TEXT_FLAGS, sort=True)
     blocks: list[TextBlock] = []
@@ -104,23 +152,8 @@ def _extract_page(page: pymupdf.Page, progress: ProgressCallback | None = None) 
             blocks.append(TextBlock(lines=lines, bbox=_bbox(raw_block["bbox"])))
     rect = page.rect
     if not blocks and page.get_images():
-        if progress is not None:
-            progress(page.number, page.parent.page_count)
-        try:
-            ocr_blocks, words = recognize_page(page)
-        except Exception:
-            log.warning("OCR failed on page %d", page.number + 1, exc_info=True)
-            ocr_blocks, words = (), ()
-        log.info("OCR page %d: %d words", page.number + 1, len(words))
-        return Page(
-            number=page.number + 1,
-            width=rect.width,
-            height=rect.height,
-            blocks=ocr_blocks,
-            words=words,
-            has_images=True,
-            ocr=True,
-        )
+        # A scanned page: recognized afterwards, all scanned pages together.
+        return Page(page.number + 1, rect.width, rect.height, (), has_images=True)
     words = tuple(
         OcrWord(w[4], (float(w[0]), float(w[1]), float(w[2]), float(w[3])))
         for w in page.get_text("words", flags=_TEXT_FLAGS)

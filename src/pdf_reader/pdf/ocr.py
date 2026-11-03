@@ -8,8 +8,11 @@ converted back to PDF points, so they line up with the page.
 
 import asyncio
 import logging
+import os
 import statistics
 import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import pymupdf
@@ -49,50 +52,118 @@ def ocr_available() -> bool:
     return _get_engine() is not None
 
 
-def recognize_page(page: pymupdf.Page) -> tuple[tuple[TextBlock, ...], tuple[OcrWord, ...]]:
-    """Recognize the text on a page image.
+type RawLine = list[tuple[str, BBox]]
+"""One recognized line: its words with positions in PDF points."""
+
+_local = threading.local()
+
+
+def recognize_pages(
+    pdf_bytes: bytes,
+    page_numbers: list[int],
+    progress: Callable[[int, int], None] | None = None,
+    workers: int | None = None,
+) -> dict[int, list[RawLine]]:
+    """Recognize several pages in parallel.
+
+    Each worker thread keeps its own copy of the document and its own OCR engine, so
+    pages are rendered and recognized at the same time on several cores.
 
     Args:
-        page: The PDF page; it is rendered internally.
+        pdf_bytes: The PDF file's contents.
+        page_numbers: 1-based pages to recognize.
+        progress: Called with ``(pages_done, pages_total)`` as pages finish.
+        workers: Thread count; defaults to the number of CPUs (at most 6).
 
     Returns:
-        Text blocks (lines grouped into paragraphs) and every recognized word, all in
-        PDF points. Both are empty if OCR is unavailable or finds nothing.
+        The recognized lines of each page. Pages that fail are returned empty.
     """
-    engine = _get_engine()
-    if engine is None:
-        return (), ()
+    if not page_numbers or _get_engine() is None:
+        return {}
+    workers = workers or max(1, min(6, os.cpu_count() or 2))
+    results: dict[int, list[RawLine]] = {}
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ocr") as pool:
+        futures = {pool.submit(_recognize_one, pdf_bytes, n): n for n in page_numbers}
+        for future in as_completed(futures):
+            number = futures[future]
+            try:
+                results[number] = future.result()
+            except Exception:
+                log.warning("OCR failed on page %d", number, exc_info=True)
+                results[number] = []
+            done += 1
+            if progress is not None:
+                progress(done, len(page_numbers))
+    return results
+
+
+def _recognize_one(pdf_bytes: bytes, page_number: int) -> list[RawLine]:
+    """Render and recognize one page with this thread's document and engine."""
     from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
     from winrt.windows.media.ocr import OcrEngine
     from winrt.windows.storage.streams import DataWriter
 
+    if getattr(_local, "pdf", None) is None:
+        _local.pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        _local.engine = OcrEngine.try_create_from_user_profile_languages()
+    page = _local.pdf[page_number - 1]
     zoom = OCR_DPI / 72
     max_side = OcrEngine.max_image_dimension  # A static property in WinRT.
     zoom = min(zoom, max_side / max(page.rect.width, page.rect.height, 1))
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=True)
+    # Grayscale: a quarter of the data of colour, and just as good for reading text.
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY)
     writer = DataWriter()
-    writer.write_bytes(bytes(pix.samples))
+    samples = bytes(pix.samples)
+    if pix.stride != pix.width:  # Gray8 bitmaps need tightly packed rows.
+        samples = b"".join(
+            samples[row * pix.stride : row * pix.stride + pix.width] for row in range(pix.height)
+        )
+    writer.write_bytes(samples)
     bitmap = SoftwareBitmap.create_copy_from_buffer(
-        writer.detach_buffer(), BitmapPixelFormat.RGBA8, pix.width, pix.height
+        writer.detach_buffer(), BitmapPixelFormat.GRAY8, pix.width, pix.height
     )
+    engine = _local.engine
 
     async def run() -> Any:
         return await engine.recognize_async(bitmap)
 
     result = asyncio.run(run())
-    lines: list[tuple[str, BBox, list[OcrWord]]] = []
+    lines: list[RawLine] = []
     for line in result.lines:
         words = []
         for word in line.words:
             r = word.bounding_rect
-            box = (r.x / zoom, r.y / zoom, (r.x + r.width) / zoom, (r.y + r.height) / zoom)
-            words.append(OcrWord(word.text, box))
+            words.append(
+                (
+                    word.text,
+                    (r.x / zoom, r.y / zoom, (r.x + r.width) / zoom, (r.y + r.height) / zoom),
+                )
+            )
         if words:
-            text = " ".join(w.text for w in words)
-            lines.append((text, _union([w.bbox for w in words]), words))
-    blocks = _group_lines(lines)
-    all_words = tuple(w for _, _, words in lines for w in words)
+            lines.append(words)
+    return lines
+
+
+def build_page_text(lines: list[RawLine]) -> tuple[tuple[TextBlock, ...], tuple[OcrWord, ...]]:
+    """Turn recognized lines into paragraph blocks and a flat word list."""
+    grouped: list[tuple[str, BBox, list[OcrWord]]] = []
+    for line in lines:
+        words = [OcrWord(text, (box[0], box[1], box[2], box[3])) for text, box in line]
+        if words:
+            grouped.append(
+                (" ".join(w.text for w in words), _union([w.bbox for w in words]), words)
+            )
+    blocks = _group_lines(grouped)
+    all_words = tuple(w for _, _, words in grouped for w in words)
     return blocks, all_words
+
+
+def recognize_page(page: pymupdf.Page) -> tuple[tuple[TextBlock, ...], tuple[OcrWord, ...]]:
+    """Recognize one page (convenience wrapper around :func:`recognize_pages`)."""
+    data = page.parent.tobytes()
+    lines = recognize_pages(data, [page.number + 1], workers=1).get(page.number + 1, [])
+    return build_page_text(lines)
 
 
 def _union(boxes: list[BBox]) -> BBox:

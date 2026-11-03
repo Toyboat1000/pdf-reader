@@ -22,6 +22,8 @@ class Segment:
         bbox: Bounding box of the source text block, if known.
         ends_sentence: False when this is a non-final piece of a long sentence that
             was split, so playback can use a shorter pause after it.
+        ends_paragraph: True for the last sentence of a paragraph or a heading, so
+            playback can pause a little longer, as a person would.
         source: The PDF text block this segment came from, with line and span detail,
             if known.
         page_size: ``(width, height)`` of the source page in points, if known.
@@ -32,5 +34,6 @@ class Segment:
     block: int
     bbox: BBox | None = None
     ends_sentence: bool = True
+    ends_paragraph: bool = False
     source: TextBlock | None = None
     page_size: tuple[float, float] | None = None

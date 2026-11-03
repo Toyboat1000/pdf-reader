@@ -3,9 +3,10 @@
 import math
 import re
 
-DEFAULT_MAX_CHARS = 250
-"""Default chunk length limit. Kokoro accepts about 510 phonemes; 250 characters of
-English stays well below that and keeps the time to first audio short."""
+DEFAULT_MAX_CHARS = 380
+"""Default chunk length limit. Kokoro accepts about 510 phonemes (roughly 400
+characters of English). Speaking a whole sentence in one piece keeps its intonation
+natural, so only sentences longer than this are split."""
 
 # Preferred split points, best first. A chunk ends right after the matched text.
 _DELIMITER_GROUPS: tuple[re.Pattern[str], ...] = (

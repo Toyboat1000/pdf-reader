@@ -185,7 +185,7 @@ def test_position_follows_playback(h: Harness, pdf: Path) -> None:
     h.session.play()
     stream = h.factory.wait_active()
     assert wait_until(lambda: len(h.engine.calls) >= 2)
-    stream.pump(400)  # Sentence 0 (11 samples + pause) and into sentence 1.
+    stream.pump(700)  # Sentence 0 (11 samples + paragraph pause) and into sentence 1.
     assert wait_until(lambda: h.session.position == 1)
     assert 1 in h.listener.named("on_position_changed")
 
@@ -196,7 +196,7 @@ def test_reaching_end_returns_to_ready_and_play_restarts(h: Harness, pdf: Path) 
     h.session.seek(4)
     stream = h.factory.wait_active()
     assert wait_until(lambda: len(h.engine.calls) >= 1)
-    stream.pump(400)
+    stream.pump(700)
     assert wait_until(lambda: h.session.state is ReadingState.READY)
     assert h.session.position == 4
     h.session.play()
@@ -406,7 +406,7 @@ def test_finishing_a_document_resets_its_position(library_path: Path, pdf: Path)
         first.session.seek(4)  # Last sentence; starts playing.
         stream = first.factory.wait_active()
         assert wait_until(lambda: len(first.engine.calls) >= 1)
-        stream.pump(400)
+        stream.pump(700)
         assert wait_until(lambda: first.session.state is ReadingState.READY)
     finally:
         first.session.shutdown()

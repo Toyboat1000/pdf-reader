@@ -32,6 +32,7 @@ from pdf_reader.core.word_map import build_word_map
 from pdf_reader.library import Anchor, Bookmark, DocumentRecord, LibraryStore
 from pdf_reader.library.anchors import file_id, make_anchor, resolve
 from pdf_reader.pdf import NoTextError, PdfError, load_pdf
+from pdf_reader.pdf.ocr_cache import OcrCache
 from pdf_reader.text.pipeline import TextPipeline
 from pdf_reader.tts.base import ModelLoadError, TtsEngine, Voice
 from pdf_reader.tts.download import DownloadCancelledError, DownloadError, RemoteFile
@@ -129,10 +130,12 @@ class ReadingSession(PlaybackListener):
         speed: float = 1.0,
         pipeline: TextPipeline | None = None,
         library: LibraryStore | None = None,
+        ocr_cache: OcrCache | None = None,
         controller_factory: ControllerFactory = PlaybackController,
     ) -> None:
         self._engine = engine
         self._library = library
+        self._ocr_cache = ocr_cache
         self._listener = listener
         self._pipeline = pipeline or TextPipeline()
         self._lock = threading.RLock()
@@ -281,14 +284,20 @@ class ReadingSession(PlaybackListener):
 
         def task() -> None:
             try:
-                document = load_pdf(path, progress=self._listener.on_loading_progress)
+                file_hash = self._document_id(path)
+                document = load_pdf(
+                    path,
+                    progress=self._listener.on_loading_progress,
+                    ocr_cache=self._ocr_cache,
+                    file_hash=file_hash,
+                )
                 sentences = tuple(self._pipeline.process_document(document))
                 if not sentences:
                     raise NoTextError(path)
                 result: ReadingDocument | str = ReadingDocument.from_pdf(
                     document,
                     sentences,
-                    doc_id=self._document_id(path),
+                    doc_id=file_hash if self._library is not None else None,
                     word_map=build_word_map(document, sentences),
                 )
             except PdfError as exc:
@@ -356,8 +365,8 @@ class ReadingSession(PlaybackListener):
             self._listener.on_document_error(path, result)
 
     def _document_id(self, path: Path) -> str | None:
-        """Identify a file by content, if a library is in use. Runs off the UI thread."""
-        if self._library is None:
+        """Identify a file by content (for the library and OCR cache). Off the UI thread."""
+        if self._library is None and self._ocr_cache is None:
             return None
         try:
             return file_id(path)

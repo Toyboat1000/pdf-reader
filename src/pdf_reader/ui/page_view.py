@@ -5,6 +5,7 @@ select text and copy it, and zoom with Ctrl + mouse wheel. Works for scanned pag
 (text from OCR) and ordinary PDFs (text from the file) alike.
 """
 
+import bisect
 import logging
 from collections import OrderedDict
 
@@ -78,6 +79,8 @@ class PageView(QAbstractScrollArea):
         self._zoom = 1.0  # User zoom relative to fit-to-width.
         self._word_map: WordMap | None = None
         self._words: list[WordBox] = []  # All words in reading order, for selection.
+        self._words_by_page: dict[int, range] = {}  # Page -> its slice of _words.
+        self._widest = 0.0
         self._current = -1
         self._cache: OrderedDict[tuple[int, float], QPixmap] = OrderedDict()
         self._press_pos: QPoint | None = None
@@ -110,6 +113,12 @@ class PageView(QAbstractScrollArea):
         self._words = [
             w for page in sorted(self._word_map.by_page) for w in self._word_map.by_page[page]
         ]
+        self._words_by_page = {}
+        start = 0
+        for page in sorted(self._word_map.by_page):
+            count = len(self._word_map.by_page[page])
+            self._words_by_page[page] = range(start, start + count)
+            start += count
         self._relayout()
         self.verticalScrollBar().setValue(0)
         self.viewport().update()
@@ -187,7 +196,7 @@ class PageView(QAbstractScrollArea):
     def _relayout(self) -> None:
         if not self._sizes:
             return
-        widest = max(w for w, _ in self._sizes)
+        widest = self._widest = max(w for w, _ in self._sizes)
         available = max(self.viewport().width() - 2 * _MARGIN, 100)
         self._scale = min(_MAX_FIT, available / widest) * self._zoom
         y = float(_MARGIN)
@@ -207,7 +216,7 @@ class PageView(QAbstractScrollArea):
 
     def _page_rect(self, index: int) -> QRectF:
         w, h = self._sizes[index]
-        widest = max(pw for pw, _ in self._sizes)
+        widest = self._widest
         content_width = widest * self._scale + 2 * _MARGIN
         if content_width <= self.viewport().width():
             left = (self.viewport().width() - w * self._scale) / 2
@@ -244,11 +253,8 @@ class PageView(QAbstractScrollArea):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         background = self.palette().color(QPalette.ColorRole.Window).darker(112)
         painter.fillRect(self.viewport().rect(), background)
-        height = self.viewport().height()
-        for index in range(len(self._sizes)):
+        for index in self._visible_pages():
             rect = self._page_rect(index)
-            if rect.bottom() < 0 or rect.top() > height:
-                continue
             self._draw_shadow(painter, rect)
             pixmap = self._pixmap(index + 1)
             if pixmap is None:
@@ -269,6 +275,16 @@ class PageView(QAbstractScrollArea):
                 painter, self._pills(self._current), accent, fill=0.32, outline=0.9, opacity=1.0
             )
         painter.end()
+
+    def _visible_pages(self) -> range:
+        """Indexes of the pages that intersect the viewport (binary search)."""
+        if not self._tops:
+            return range(0)
+        top = self.verticalScrollBar().value()
+        bottom = top + self.viewport().height()
+        first = max(0, bisect.bisect_right(self._tops, top) - 1)
+        last = bisect.bisect_right(self._tops, bottom)
+        return range(first, min(last, len(self._tops)))
 
     @staticmethod
     def _draw_shadow(painter: QPainter, rect: QRectF) -> None:
@@ -432,10 +448,8 @@ class PageView(QAbstractScrollArea):
         x = (pos.x() - rect.left()) / self._scale
         y = (pos.y() - rect.top()) / self._scale
         best, best_distance = None, float("inf")
-        for i, word in enumerate(self._words):
-            if word.page != page:
-                continue
-            x0, y0, x1, y1 = word.bbox
+        for i in self._words_by_page.get(page, range(0)):
+            x0, y0, x1, y1 = self._words[i].bbox
             dx = max(x0 - x, 0.0, x - x1)
             dy = max(y0 - y, 0.0, y - y1)
             distance = dx * dx + 4 * dy * dy
@@ -446,7 +460,7 @@ class PageView(QAbstractScrollArea):
         return best
 
     def _page_at(self, pos: QPoint) -> int | None:
-        for index in range(len(self._sizes)):
+        for index in self._visible_pages():
             if self._page_rect(index).contains(QPointF(pos)):
                 return index + 1
         return None

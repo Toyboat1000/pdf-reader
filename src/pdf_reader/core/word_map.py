@@ -48,15 +48,19 @@ class WordMap:
     _lines: dict[int, list[tuple[int, BBox]]] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
+    _by_sentence: dict[int, list[WordBox]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def sentence_boxes(self, sentence: int) -> list[WordBox]:
         """Return the highlighted words of a sentence, in page order."""
-        return [
-            w
-            for words in self.by_page.values()
-            for w in words
-            if w.sentence == sentence and w.spoken
-        ]
+        if not self._by_sentence:
+            # Built once: looking words up per sentence must not scan the whole book.
+            for page in sorted(self.by_page):
+                for word in self.by_page[page]:
+                    if word.spoken:
+                        self._by_sentence.setdefault(word.sentence, []).append(word)
+        return list(self._by_sentence.get(sentence, []))
 
     def sentence_lines(self, sentence: int) -> list[tuple[int, BBox]]:
         """Return one even band per line a sentence covers, as ``(page, bbox)``.

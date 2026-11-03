@@ -109,9 +109,10 @@ def drop_unspeakable(segments: list[Segment]) -> list[Segment]:
 def split_sentences(segments: list[Segment]) -> list[Segment]:
     """Split each segment into one segment per sentence."""
     return [
-        replace(segment, text=sentence, ends_sentence=True)
+        replace(segment, text=sentence, ends_sentence=True, ends_paragraph=i == len(parts) - 1)
         for segment in segments
-        for sentence in split_into_sentences(segment.text)
+        for parts in [split_into_sentences(segment.text)]
+        for i, sentence in enumerate(parts)
     ]
 
 
@@ -128,7 +129,10 @@ def split_long_sentences(max_chars: int = DEFAULT_MAX_CHARS) -> TextStep:
             last = len(pieces) - 1
             result.extend(
                 replace(
-                    segment, text=piece, ends_sentence=segment.ends_sentence if i == last else False
+                    segment,
+                    text=piece,
+                    ends_sentence=segment.ends_sentence if i == last else False,
+                    ends_paragraph=segment.ends_paragraph if i == last else False,
                 )
                 for i, piece in enumerate(pieces)
             )

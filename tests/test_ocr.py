@@ -83,7 +83,7 @@ def test_scanned_pdf_is_read_with_ocr(scanned_pdf: Path) -> None:
     progress: list[tuple[int, int]] = []
     document = load_pdf(scanned_pdf, progress=lambda done, total: progress.append((done, total)))
     assert document.is_scanned
-    assert progress == [(0, 3), (1, 3), (2, 3)]
+    assert progress == [(1, 3), (2, 3), (3, 3)]
     texts = [s.text for s in TextPipeline().process_document(document)]
     assert texts[0] == "A Short Guide to Listening"
     assert "Reading aloud is one of the oldest ways of sharing a text." in texts

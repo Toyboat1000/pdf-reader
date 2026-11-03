@@ -676,7 +676,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int)
     def _on_loading_progress(self, done: int, total: int) -> None:
-        self._ocr_progress = f"Recognizing text in scanned pages (page {done + 1} of {total})..."
+        self._ocr_progress = f"Reading scanned pages… {done} of {total}"
         self._update_controls()
 
     @Slot(str)

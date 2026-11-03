@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from pdf_reader.audio.playback import (
+    SENTENCE_PAUSE_SECONDS,
     PlaybackController,
     ensure_trailing_silence,
 )
@@ -30,6 +31,7 @@ class Line:
 
 
 SCRIPT = [Line(f"Sentence number {i}.") for i in range(10)]
+PAUSE = int(SENTENCE_PAUSE_SECONDS * SAMPLE_RATE)
 
 
 class Harness:
@@ -62,7 +64,7 @@ class Harness:
     def play_sentence(self) -> np.ndarray:
         """Pump exactly one sentence (plus its pause) of audio once it is queued."""
         text_len = len(SCRIPT[0].text)
-        pause = int(0.25 * SAMPLE_RATE)
+        pause = int(SENTENCE_PAUSE_SECONDS * SAMPLE_RATE)
         return self.stream.pump(text_len + pause)
 
     def close(self) -> None:
@@ -136,7 +138,7 @@ def test_speed_change_applies_from_next_sentence(h: Harness) -> None:
     assert wait_until(lambda: (SCRIPT[2].text, "af_heart", 1.5) in h.engine.calls)
     assert (SCRIPT[0].text, "af_heart", 1.5) not in h.engine.calls
 
-    rest_of_first = h.stream.pump(len(SCRIPT[0].text) + 250 - 5)
+    rest_of_first = h.stream.pump(len(SCRIPT[0].text) + PAUSE - 5)
     assert rest_of_first[0] == pytest.approx(hash_value(SCRIPT[0].text, "af_heart", 1.0))
     second = h.play_sentence()
     assert second[0] == pytest.approx(hash_value(SCRIPT[1].text, "af_heart", 1.5))
@@ -148,7 +150,7 @@ def test_voice_change_regenerates_upcoming(h: Harness) -> None:
     h.stream.pump(5)
     h.controller.set_voice("am_adam")
     assert wait_until(lambda: (SCRIPT[2].text, "am_adam", 1.0) in h.engine.calls)
-    h.stream.pump(len(SCRIPT[0].text) + 250 - 5)
+    h.stream.pump(len(SCRIPT[0].text) + PAUSE - 5)
     assert h.play_sentence()[0] == pytest.approx(hash_value(SCRIPT[1].text, "am_adam", 1.0))
 
 
@@ -159,7 +161,7 @@ def test_outdated_audio_plays_if_replacement_is_late(h: Harness) -> None:
     h.stream.pump(5)
     h.engine.gate = threading.Event()  # Block all further synthesis.
     h.controller.set_speed(2.0)
-    h.stream.pump(len(SCRIPT[0].text) + 250 - 5)
+    h.stream.pump(len(SCRIPT[0].text) + PAUSE - 5)
     second = h.play_sentence()
     assert second[0] == pytest.approx(hash_value(SCRIPT[1].text, "af_heart", 1.0))
     h.engine.gate.set()
@@ -208,7 +210,7 @@ def test_stop_then_resume_restarts_current_sentence(h: Harness) -> None:
 def test_preview_plays_sample_and_reports_end(h: Harness) -> None:
     h.controller.preview("Hi there", "am_adam", 1.0)
     assert wait_until(lambda: ("Hi there", "am_adam", 1.0) in h.engine.calls)
-    out = h.stream.pump(8 + 250)
+    out = h.stream.pump(8 + PAUSE)
     assert out[0] == pytest.approx(hash_value("Hi there", "am_adam", 1.0))
     assert wait_until(lambda: h.listener.named("on_preview_finished") != [])
     assert h.listener.named("on_sentence_started") == []

@@ -18,6 +18,7 @@ from pdf_reader.tts.base import (
 )
 from pdf_reader.tts.download import ProgressCallback, RemoteFile, download_files, is_present
 from pdf_reader.tts.kokoro_voices import english_voices
+from pdf_reader.tts.speech_text import speech_text
 
 if TYPE_CHECKING:
     import onnxruntime
@@ -138,7 +139,7 @@ class KokoroEngine(TtsEngine):
             raise SynthesisError(f"Unknown voice {voice_id!r}.")
         try:
             audio, _ = kokoro.create(
-                text, voice=voice_id, speed=clamp_speed(speed), lang=voice.language
+                speech_text(text), voice=voice_id, speed=clamp_speed(speed), lang=voice.language
             )
         except SynthesisCancelledError:
             raise
@@ -149,7 +150,7 @@ class KokoroEngine(TtsEngine):
         except Exception as exc:
             log.exception("Synthesis failed for %r", text)
             raise SynthesisError(str(exc)) from exc
-        return np.asarray(audio, dtype=np.float32).ravel()
+        return polish(np.asarray(audio, dtype=np.float32).ravel(), SAMPLE_RATE)
 
     def cancel(self) -> None:
         """Abort synthesis in progress (ONNX Runtime stops between graph nodes)."""
@@ -195,6 +196,44 @@ class _InterruptibleSession:
         with self._lock:
             for options in self._active:
                 options.terminate = True
+
+
+_QUIET_DB = -42.0  # Below this (relative to the peak) counts as silence.
+_TARGET_RMS = 0.085  # About -21 dBFS: comfortable and consistent.
+_FADE_IN_S = 0.004
+_FADE_OUT_S = 0.012
+
+
+def polish(audio: AudioArray, sample_rate: int) -> AudioArray:
+    """Prepare a sentence's audio so consecutive sentences join seamlessly.
+
+    Trims the model's own leading and trailing silence (playback adds pauses that
+    suit the text instead), evens out loudness from sentence to sentence, and fades
+    the very edges by a few milliseconds so joins never click.
+    """
+    if audio.size == 0:
+        return audio
+    level = np.abs(audio)
+    peak = float(level.max())
+    if peak <= 0:
+        return np.zeros(0, dtype=np.float32)
+    loud = np.nonzero(level > peak * 10 ** (_QUIET_DB / 20))[0]
+    start = max(0, int(loud[0]) - int(0.008 * sample_rate))
+    end = min(audio.size, int(loud[-1]) + int(0.020 * sample_rate))
+    audio = audio[start:end].astype(np.float32, copy=True)
+    voiced = audio[np.abs(audio) > peak * 0.02]
+    rms = float(np.sqrt(np.mean(voiced**2))) if voiced.size else 0.0
+    if rms > 0:
+        gain = min(max(_TARGET_RMS / rms, 0.6), 1.8)
+        gain = min(gain, 0.97 / peak)  # Never clip.
+        audio *= gain
+    fade_in = min(int(_FADE_IN_S * sample_rate), audio.size)
+    fade_out = min(int(_FADE_OUT_S * sample_rate), audio.size)
+    if fade_in:
+        audio[:fade_in] *= np.linspace(0.0, 1.0, fade_in, dtype=np.float32)
+    if fade_out:
+        audio[-fade_out:] *= np.linspace(1.0, 0.0, fade_out, dtype=np.float32)
+    return audio
 
 
 def _route_library_logging() -> None:

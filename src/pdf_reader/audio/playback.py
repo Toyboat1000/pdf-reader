@@ -35,11 +35,14 @@ log = logging.getLogger(__name__)
 DEFAULT_LOOKAHEAD = 3
 """Sentences generated ahead of the one playing."""
 
-SENTENCE_PAUSE_SECONDS = 0.25
-"""Minimum silence after a sentence."""
+SENTENCE_PAUSE_SECONDS = 0.2
+"""Silence after a sentence within a paragraph (a short breath)."""
+
+PARAGRAPH_PAUSE_SECONDS = 0.55
+"""Silence after the last sentence of a paragraph, or after a heading."""
 
 CLAUSE_PAUSE_SECONDS = 0.1
-"""Minimum silence after a piece of a long sentence that was split."""
+"""Silence after a piece of a long sentence that was split."""
 
 _CACHE_SIZE = 12
 _MAX_CONSECUTIVE_FAILURES = 3
@@ -87,6 +90,7 @@ class _Job:
     index: int
     text: str
     ends_sentence: bool
+    ends_paragraph: bool
     voice: str
     speed: float
     epoch: int
@@ -319,6 +323,7 @@ class PlaybackController(PlayerListener):
             index,
             item.text,
             item.ends_sentence,
+            getattr(item, "ends_paragraph", False),
             self._voice,
             self._speed,
             self._epoch,
@@ -361,7 +366,9 @@ class PlaybackController(PlayerListener):
         if self._preview is not None:
             text, voice, speed = self._preview
             self._preview = None
-            return _Job(PREVIEW_INDEX, text, True, voice, speed, self._epoch, self._params_version)
+            return _Job(
+                PREVIEW_INDEX, text, True, False, voice, speed, self._epoch, self._params_version
+            )
         job = self._job_for_locked(self._next_index)
         self._next_index += 1
         return job
@@ -376,7 +383,14 @@ class PlaybackController(PlayerListener):
         except TtsError:
             log.exception("Could not synthesize sentence %d", job.index)
             return np.zeros(0, dtype=np.float32), True
-        pause = SENTENCE_PAUSE_SECONDS if job.ends_sentence else CLAUSE_PAUSE_SECONDS
+        if job.ends_paragraph:
+            pause = PARAGRAPH_PAUSE_SECONDS
+        elif job.ends_sentence:
+            pause = SENTENCE_PAUSE_SECONDS
+        else:
+            pause = CLAUSE_PAUSE_SECONDS
+        # Faster reading gets proportionally shorter pauses, but never rushed ones.
+        pause /= max(job.speed, 1.0) ** 0.6
         samples = ensure_trailing_silence(raw, self._engine.sample_rate, pause)
         if job.index != PREVIEW_INDEX:
             with self._cond:

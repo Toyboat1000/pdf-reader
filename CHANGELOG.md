@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-03
+
+An installer: download one file, double-click, and start listening.
+
+### Added
+
+- Windows installer (`PDF-Reader-Setup-<version>.exe`): installs for the current user
+  without administrator rights, checks the system first (64-bit Windows 10 1809 or
+  later, memory, disk space), can download the voices during setup with SHA-256
+  checks, adds Start menu and optional desktop shortcuts and "Open with" entries, and
+  has an uninstaller that offers to remove the voices and settings too. Built by
+  `packaging/build.ps1`, with a SHA-256 checksum file for each release.
+- An app icon, also shown in the taskbar and the Windows media controls.
+
 ### Changed
 
 - Years are read the way people say them: "1930" is "nineteen thirty", "1905"

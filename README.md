@@ -9,7 +9,7 @@ It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-s
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.8). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.9). See the [roadmap](ROADMAP.md) for what's next.
 
 ![PDF Reader reading a PDF page, with the spoken word highlighted inside the current sentence](docs/screenshot.png)
 
@@ -96,40 +96,66 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 
 ## Requirements
 
-- Windows 10 or 11, 64-bit
-- About 1.5 GB of free disk space (app dependencies plus the voice model)
-- About 1 GB of free memory while reading
-- An internet connection **once**, for the voice model download
+- Windows 10 (version 1809 or later) or Windows 11, 64-bit
+- About 1 GB of free disk space (the app plus the voices)
+- 4 GB of memory or more recommended (reading uses about 1 GB)
+- An internet connection **once**, for the voice download (and when you open web links)
 
 ## Installation
 
-A one-click Windows installer is planned (see the [roadmap](ROADMAP.md)). Until then,
-PDF Reader runs from source using [uv](https://docs.astral.sh/uv/), which takes care of
-Python and all dependencies for you.
+### The easy way: the installer
 
-1. **Install uv** (one time). Open PowerShell and run:
+1. Go to the [latest release](https://github.com/Toyboat1000/pdf-reader/releases/latest)
+   and download **`PDF-Reader-Setup-<version>.exe`**.
+2. Double-click it and follow the steps. It installs for your user account only, so it
+   never asks for administrator rights.
+3. Leave **Download the natural voices now** ticked (about 354 MB, once). Each file is
+   checked against its published SHA-256 fingerprint. If you untick it, or you're
+   offline, the app downloads the voices the first time it starts.
+4. Open **PDF Reader** from the Start menu (or the desktop shortcut, if you chose one).
+
+**"Windows protected your PC"?** The installer isn't code-signed yet (signing
+certificates cost money), so Windows SmartScreen may warn about a new, unknown
+publisher. Click **More info**, then **Run anyway**. To be sure the file is genuine,
+compare its fingerprint with `SHA256SUMS.txt` from the same release:
+
+```powershell
+Get-FileHash .\PDF-Reader-Setup-<version>.exe -Algorithm SHA256
+```
+
+The two values must match exactly.
+
+**What the installer does:** it copies the app to `%LOCALAPPDATA%\Programs\PDF Reader`,
+adds a Start menu shortcut (and optionally a desktop shortcut and "Open with" entries
+for PDF, EPUB, and Word files, which never replace your default apps), and registers an
+uninstaller. It doesn't install services, background tasks, or anything outside your
+user profile. Updating: run the newer installer; your voices, settings, positions, and
+bookmarks are kept.
+
+**Uninstalling:** Settings > Apps > Installed apps > PDF Reader > Uninstall. You'll be
+asked whether to also remove the downloaded voices, settings, and reading history.
+
+### From source (developers)
+
+PDF Reader also runs from source with [uv](https://docs.astral.sh/uv/), which takes care
+of Python and all dependencies.
+
+1. Install uv (one time), then close and reopen PowerShell:
 
    ```powershell
    winget install --id astral-sh.uv -e
    ```
 
-   Close and reopen PowerShell afterwards.
-
-2. **Download PDF Reader.** Either clone [the repository](https://github.com/Toyboat1000/pdf-reader) with Git, or download it as a
-   ZIP from GitHub (green **Code** button, then **Download ZIP**) and extract it.
-
-3. **Start the app** from the project folder:
+2. Clone [the repository](https://github.com/Toyboat1000/pdf-reader) (or download it as
+   a ZIP from the green **Code** button and extract it), and in its folder run:
 
    ```powershell
    uv run pdf-reader
    ```
 
-   The first start installs dependencies, which takes a minute or two. You can also
-   open a file straight away with `uv run pdf-reader "C:\path\to\file.pdf"`.
-
-4. **Download the voice model.** On first launch, the app explains the one-time
-   download and shows its progress. If the download is interrupted, it resumes where it
-   left off when you click **Retry**.
+   The first start installs dependencies, which takes a minute or two. On first launch
+   the app offers the one-time voice download; if it's interrupted, **Retry** resumes
+   it.
 
 ## Where your data is stored
 
@@ -141,8 +167,8 @@ Python and all dependencies for you.
 | Saved OCR results and covers | `%LOCALAPPDATA%\PDF Reader\ocr-cache\`, `thumbnails\` |
 | Log files | `%LOCALAPPDATA%\PDF Reader\logs\` (also via **Help > Open Log Folder**) |
 
-To uninstall completely, delete the project folder and the two `PDF Reader` folders
-above.
+The uninstaller offers to remove these. When running from source, delete the project
+folder and the two `PDF Reader` folders above to remove everything.
 
 ## Troubleshooting
 
@@ -187,6 +213,21 @@ uv run python scripts/make_sample_pdf.py sample.pdf
 uv run python scripts/make_sample_pdf.py --layout layout-sample.pdf   # columns, footnotes
 ```
 
+### Building the installer
+
+```powershell
+winget install --id JRSoftware.InnoSetup -e   # once
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+```
+
+This runs the tests, builds the app with PyInstaller (`packaging/pdf-reader.spec`),
+and compiles the setup wizard with Inno Setup (`packaging/installer.iss`) into
+`dist\PDF-Reader-Setup-<version>.exe`, plus `dist\SHA256SUMS.txt`. The voice model's
+addresses and SHA-256 hashes come from the app's code (`packaging/write_defines.py`),
+so the installer and the app always agree. To code-sign, pass
+`-SignTool "signtool sign /a /fd sha256 /tr <timestamp-url> /td sha256 $f"`. The icon
+and wizard pictures are drawn by `packaging/make_artwork.py`.
+
 ### Project layout
 
 ```
@@ -201,6 +242,7 @@ src/pdf_reader/
   ui/       all PySide6 code
 tests/      pytest suite with fakes for the engine and audio device
 scripts/    developer utilities (sample PDF generators)
+packaging/  installer: PyInstaller spec, Inno Setup script, build script, artwork
 ```
 
 [CLAUDE.md](CLAUDE.md) documents the architecture and conventions in more detail.

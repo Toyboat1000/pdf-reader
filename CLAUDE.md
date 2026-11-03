@@ -24,6 +24,7 @@ uv run ruff format .            # format; run before committing
 uv run python scripts/make_sample_pdf.py sample.pdf            # simple test PDF
 uv run python scripts/make_sample_pdf.py --layout layout.pdf    # columns, footnotes
 uv run python scripts/make_sample_documents.py book.epub        # also .docx, .html
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1     # installer (needs Inno Setup)
 ```
 
 Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`); commit `uv.lock`.
@@ -116,6 +117,13 @@ ui  ->  core  ->  audio  ->  tts
   (system/light/sepia/dark) and the bundled OpenDyslexic in `ui/fonts/`.
   `system/media_controls.MediaControls` (Windows SMTC; `MainWindow(media_controls=True)`
   only in the app, never in tests).
+- **packaging/** (v0.9): `pdf-reader.spec` (PyInstaller, one folder, no UPX; bundles
+  espeak-ng data, fonts, icon; excludes unused Qt modules), `installer.iss` (Inno
+  Setup: per-user, `PrivilegesRequired=lowest`, voice download with SHA-256 via
+  `CreateDownloadPage`, AppUserModelID shortcuts matching `app._set_windows_app_id`),
+  `write_defines.py` (installer constants from the code), `build.ps1`, and
+  `make_artwork.py` (icon and wizard pictures). Data files used at run time must be
+  listed in the spec's `datas`, or the installed app won't find them.
 - **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
   reading position, bookmarks) in `library.json`, thread-safe, written atomically by
   `flush()` (the session flushes on pause, stop, document switch, bookmark changes,

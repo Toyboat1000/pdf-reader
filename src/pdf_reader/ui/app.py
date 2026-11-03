@@ -3,8 +3,10 @@
 import logging
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from pdf_reader.config.constants import APP_NAME, APP_VERSION
@@ -28,6 +30,9 @@ from pdf_reader.ui.theme import apply_theme, load_bundled_fonts
 
 log = logging.getLogger(__name__)
 
+APP_ICON = Path(__file__).parent / "assets" / "app.ico"
+"""The window and taskbar icon (drawn by ``packaging/make_artwork.py``)."""
+
 
 def run(argv: Sequence[str] | None = None) -> int:
     """Start the GUI and block until it exits.
@@ -47,6 +52,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     app = QApplication(args)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app.setWindowIcon(QIcon(str(APP_ICON)))
     load_bundled_fonts()
 
     settings_path = settings_file()

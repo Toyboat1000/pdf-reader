@@ -1,0 +1,21 @@
+What PDF Reader installs
+
+- The app, in your user folder (no administrator rights needed).
+- A Start menu shortcut, and a desktop shortcut if you choose one.
+- The natural voices (about 354 MB), downloaded now if you choose, or the first time the app starts. Each file is checked against its published fingerprint (SHA-256) before it is used.
+
+Your privacy
+
+- Everything runs on your own computer. Your documents never leave your PC.
+- No account, no ads, no tracking, and nothing runs in the background.
+- The app only goes online to download the voices, and when you open a web link.
+
+Removing it
+
+- Use Settings > Apps > Installed apps > PDF Reader > Uninstall. You'll be asked whether to also remove the downloaded voices and your settings.
+
+License
+
+PDF Reader is free, open-source software under the GNU Affero General Public License, version 3 or later. You may use it for any purpose. The full license is installed with the app (LICENSE.txt), and the source code is at https://github.com/Toyboat1000/pdf-reader.
+
+It includes the Kokoro-82M voice model (Apache 2.0), kokoro-onnx (MIT), PyMuPDF (AGPL 3.0), Qt for Python (LGPL 3.0), LAME (LGPL), and the OpenDyslexic font (SIL Open Font License 1.1).

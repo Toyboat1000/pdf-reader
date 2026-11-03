@@ -60,13 +60,14 @@ Possible refinements: a range of pages, and one track per chapter.
   player, light/sepia/dark themes, a dyslexia-friendly font, and Windows media keys
   and media panel.
 
-## 7. Windows installer
+## 7. Windows installer (done, v0.9.0)
 
-- Package a standalone `.exe` with PyInstaller.
-- Publish builds on GitHub Releases.
-- Trim dependencies for a smaller download (for example, depend on
-  `pyside6-essentials` instead of the full `pyside6` package, which includes
-  QtWebEngine).
+- Standalone app built with PyInstaller; Inno Setup wizard with system checks, voice
+  download with SHA-256 verification, shortcuts, "Open with", and a clean uninstaller.
+- Published on GitHub Releases with a SHA-256 checksum file.
+
+Possible refinements: code signing (removes the SmartScreen warning), automatic update
+checks, and depending on `pyside6-essentials` instead of `pyside6` for faster builds.
 
 ## 8. EPUB, DOCX, and web pages (done, v0.8.0)
 

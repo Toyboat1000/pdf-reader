@@ -12,6 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pdf_reader.tts.download import ProgressCallback, RemoteFile
+from pdf_reader.tts.word_timing import estimate_word_starts
 
 type AudioArray = NDArray[np.float32]
 """Mono audio samples in the range [-1, 1]."""
@@ -39,6 +40,21 @@ class Voice:
     def label(self) -> str:
         """Return a friendly label such as "Heart (US Female)"."""
         return f"{self.name} ({self.accent} {self.gender})"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Speech:
+    """Generated speech for a piece of text, with the moment each word starts.
+
+    Attributes:
+        samples: Mono float32 samples at the engine's sample rate.
+        word_starts: Seconds from the start of ``samples`` at which each word of the
+            text (``text.split()``) starts being spoken; non-decreasing. Empty if
+            the text has no words.
+    """
+
+    samples: AudioArray
+    word_starts: tuple[float, ...] = ()
 
 
 class TtsError(Exception):
@@ -93,7 +109,7 @@ class TtsEngine(ABC):
         Args:
             text: The text to speak; may be a sentence or a sentence fragment.
             voice_id: One of the ids returned by :meth:`voices`.
-            speed: Speed multiplier, 0.5 to 2.0.
+            speed: Speed multiplier, 0.5 to 4.0.
 
         Returns:
             Mono float32 samples at :attr:`sample_rate`, without leading or trailing
@@ -103,6 +119,19 @@ class TtsEngine(ABC):
             SynthesisError: Generation failed.
             SynthesisCancelledError: :meth:`cancel` was called during generation.
         """
+
+    def synthesize_timed(self, text: str, voice_id: str, speed: float) -> Speech:
+        """Generate speech for ``text`` and report when each of its words is spoken.
+
+        Engines that know their timings override this. The default spreads the words
+        over the audio by their length, which is close enough to follow along.
+
+        Raises:
+            SynthesisError: Generation failed.
+            SynthesisCancelledError: :meth:`cancel` was called during generation.
+        """
+        samples = self.synthesize(text, voice_id, speed)
+        return Speech(samples, estimate_word_starts(text, len(samples) / self.sample_rate))
 
     def cancel(self) -> None:
         """Interrupt any :meth:`synthesize` calls in progress, if the engine supports it.

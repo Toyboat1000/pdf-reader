@@ -25,12 +25,31 @@ from pdf_reader.config.settings import MAX_SPEED, MIN_SPEED
 from pdf_reader.ui.icons import Glyph, make_icon
 from pdf_reader.ui.slim_slider import SlimSlider
 
-SPEED_PRESETS = (0.75, 1.0, 1.25, 1.5, 2.0)
+SPEED_PRESETS = (0.75, 1.0, 1.5, 2.0, 3.0, 4.0)
 
 
 def format_speed(value: float) -> str:
     """Format a speed the way the capsule shows it, e.g. "1.25\u00d7"."""
     return f"{value:.2f}\u00d7"
+
+
+def format_duration(seconds: float) -> str:
+    """Format a duration as "4:05" or "1:02:09"."""
+    total = max(0, round(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
+
+
+def format_time_left(seconds: float) -> str:
+    """Describe the listening time left, e.g. "12 min left" or "1 h 5 min left"."""
+    minutes = max(0, round(seconds / 60))
+    if seconds < 60:
+        return "Less than a minute left"
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours} h {minutes} min left" if minutes else f"{hours} h left"
+    return f"{minutes} min left"
 
 
 def _button(action: QAction, name: str, size: int, icon_size: int) -> QToolButton:
@@ -53,6 +72,9 @@ class PlayerBar(QFrame):
         voice_combo: The voice list.
         preview_button: Plays a sample of the selected voice.
         position_label: "Sentence N of M".
+        elapsed_label: Estimated listening time so far.
+        remaining_label: Estimated listening time left.
+        progress_label: Percentage read and time left, under the position.
     """
 
     seek_requested = Signal(int)
@@ -93,11 +115,33 @@ class PlayerBar(QFrame):
         )
         self.position_label = QLabel()
         self.position_label.setObjectName("player-meta")
+        self.progress_label = QLabel()
+        self.progress_label.setObjectName("player-meta")
+        self.elapsed_label = QLabel()
+        self.elapsed_label.setObjectName("player-time")
+        self.elapsed_label.setToolTip("Listened so far (estimated)")
+        self.remaining_label = QLabel()
+        self.remaining_label.setObjectName("player-time")
+        self.remaining_label.setToolTip("Listening time left at this speed (estimated)")
+        for label in (self.elapsed_label, self.remaining_label):
+            label.setMinimumWidth(44)
+        self.elapsed_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._count = 0
+        slider_row = QHBoxLayout()
+        slider_row.setSpacing(8)
+        slider_row.addWidget(self.elapsed_label)
+        slider_row.addWidget(self.progress, 1)
+        slider_row.addWidget(self.remaining_label)
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(6)
+        meta_row.addStretch()
+        meta_row.addWidget(self.position_label)
+        meta_row.addWidget(self.progress_label)
+        meta_row.addStretch()
         progress_column = QVBoxLayout()
         progress_column.setSpacing(2)
-        progress_column.addWidget(self.progress)
-        progress_column.addWidget(self.position_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        progress_column.addLayout(slider_row)
+        progress_column.addLayout(meta_row)
 
         self.speed_button = QToolButton()
         self.speed_button.setObjectName("player-pill")
@@ -157,7 +201,7 @@ class PlayerBar(QFrame):
         self.speed_slider.setRange(int(MIN_SPEED * 100), int(MAX_SPEED * 100))
         self.speed_slider.setSingleStep(5)
         self.speed_slider.setPageStep(25)
-        self.speed_slider.setFixedWidth(240)
+        self.speed_slider.setFixedWidth(300)
         self.speed_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         presets = QHBoxLayout()
@@ -190,6 +234,18 @@ class PlayerBar(QFrame):
         self.speed_label.setText(text)
 
     # ------------------------------------------------------------- progress
+
+    def set_times(self, listened: float, total: float) -> None:
+        """Show estimated listening time so far and left (``total`` 0 clears them)."""
+        if total <= 0:
+            for label in (self.elapsed_label, self.remaining_label, self.progress_label):
+                label.clear()
+            return
+        left = max(0.0, total - listened)
+        self.elapsed_label.setText(format_duration(listened))
+        self.remaining_label.setText("\u2212" + format_duration(left))
+        share = min(1.0, listened / total)
+        self.progress_label.setText(f"\u00b7  {share:.0%}  \u00b7  {format_time_left(left)}")
 
     def set_document_length(self, count: int) -> None:
         """Set how many sentences the progress slider spans (0 = no document)."""

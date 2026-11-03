@@ -31,6 +31,9 @@ class SessionBridge(QObject, SessionListener):
     resumed = Signal(int)
     loading_progress = Signal(int, int)  # pages done, page count
     bookmarks_changed = Signal(list)  # list[Bookmark]
+    export_progress = Signal(int, int)  # sentences done, total
+    export_finished = Signal(object)  # Path
+    export_failed = Signal(str, bool)  # message, cancelled
 
     def on_state_changed(self, state: ReadingState) -> None:
         """Emit :attr:`state_changed`."""
@@ -83,3 +86,15 @@ class SessionBridge(QObject, SessionListener):
     def on_bookmarks_changed(self, bookmarks: list[Bookmark]) -> None:
         """Emit :attr:`bookmarks_changed`."""
         self.bookmarks_changed.emit(bookmarks)
+
+    def on_export_progress(self, done: int, total: int) -> None:
+        """Emit :attr:`export_progress`."""
+        self.export_progress.emit(done, total)
+
+    def on_export_finished(self, path: Path) -> None:
+        """Emit :attr:`export_finished`."""
+        self.export_finished.emit(path)
+
+    def on_export_failed(self, message: str, cancelled: bool) -> None:
+        """Emit :attr:`export_failed`."""
+        self.export_failed.emit(message, cancelled)

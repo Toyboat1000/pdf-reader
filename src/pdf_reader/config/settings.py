@@ -15,11 +15,14 @@ log = logging.getLogger(__name__)
 MIN_SPEED = 0.5
 """Slowest supported reading speed."""
 
-MAX_SPEED = 2.0
+MAX_SPEED = 4.0
 """Fastest supported reading speed."""
 
 DEFAULT_VOICE = "af_heart"
 """Voice used until the user picks another one."""
+
+THEMES = ("system", "light", "sepia", "dark")
+"""Colour themes; "system" follows Windows' light or dark mode."""
 
 
 @dataclass
@@ -38,6 +41,9 @@ class Settings:
         skip_asides: Skip sidebars, figure captions, and labels in PDFs.
         page_zoom: Zoom level of the page view (1.0 = fit to width).
         text_zoom: Zoom level of the text view (1.0 = normal size).
+        theme: One of :data:`THEMES`.
+        dyslexic_font: Show text in a dyslexia-friendly font.
+        word_highlight: Highlight each word as it is spoken.
     """
 
     voice: str = DEFAULT_VOICE
@@ -51,6 +57,9 @@ class Settings:
     skip_asides: bool = True
     page_zoom: float = 1.0
     text_zoom: float = 1.0
+    theme: str = "system"
+    dyslexic_font: bool = False
+    word_highlight: bool = True
 
 
 def clamp_speed(speed: float) -> float:
@@ -69,7 +78,17 @@ def _validated(raw: dict[str, Any]) -> Settings:
     for name in ("window_geometry", "window_state", "last_folder"):
         if isinstance(value := raw.get(name), str) and value:
             setattr(result, name, value)
-    for name in ("show_bookmarks", "page_view", "read_parentheses", "skip_asides"):
+    if raw.get("theme") in THEMES:
+        result.theme = raw["theme"]
+    flags = (
+        "show_bookmarks",
+        "page_view",
+        "read_parentheses",
+        "skip_asides",
+        "dyslexic_font",
+        "word_highlight",
+    )
+    for name in flags:
         if isinstance(flag := raw.get(name), bool):
             setattr(result, name, flag)
     for name in ("page_zoom", "text_zoom"):

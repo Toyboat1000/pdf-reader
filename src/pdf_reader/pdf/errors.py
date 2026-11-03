@@ -40,7 +40,9 @@ class CorruptPdfError(PdfError):
 
     def __init__(self, path: Path) -> None:
         super().__init__(
-            path, "This file appears to be damaged or isn't a valid PDF, so it can't be read."
+            path,
+            "This file appears to be damaged or isn't a document this app can read, so "
+            "it can't be opened.",
         )
 
 

@@ -1,7 +1,7 @@
 [project]
 name = "pdf-reader"
-version = "0.7.0"
-description = "Read PDF documents aloud with natural-sounding AI voices, 100% locally and offline."
+version = "0.8.0"
+description = "Read PDFs, e-books, Word documents, and web pages aloud with natural AI voices, offline."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -19,16 +19,21 @@ classifiers = [
 ]
 dependencies = [
     "kokoro-onnx>=0.6.1,<0.7",
+    "lameenc>=1.9.0",
     "numpy>=2.0",
     "pymupdf>=2.0",
     "pyside6>=6.12",
     "sounddevice>=0.5",
+    "truststore>=0.10",
     "winrt-runtime>=3",
     "winrt-windows-foundation>=3",
     "winrt-windows-foundation-collections>=3",
     "winrt-windows-globalization>=3",
     "winrt-windows-graphics-imaging>=3",
+    "winrt-windows-media>=3",
     "winrt-windows-media-ocr>=3",
+    "winrt-windows-media-playback>=3",
+    "winrt-windows-storage>=3",
     "winrt-windows-storage-streams>=3",
 ]
 

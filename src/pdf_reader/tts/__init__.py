@@ -3,6 +3,7 @@
 from pdf_reader.tts.base import (
     AudioArray,
     ModelLoadError,
+    Speech,
     SynthesisCancelledError,
     SynthesisError,
     TtsEngine,
@@ -13,6 +14,7 @@ from pdf_reader.tts.base import (
 __all__ = [
     "AudioArray",
     "ModelLoadError",
+    "Speech",
     "SynthesisCancelledError",
     "SynthesisError",
     "TtsEngine",

@@ -1,4 +1,4 @@
-"""Load a PDF with PyMuPDF and extract its text with layout information."""
+"""Load a PDF (or an e-book) with PyMuPDF and extract its text with layout information."""
 
 import hashlib
 import logging
@@ -10,6 +10,7 @@ from typing import Any
 import pymupdf
 
 from pdf_reader.pdf.errors import CorruptPdfError, EncryptedPdfError, NoTextError, PdfNotFoundError
+from pdf_reader.pdf.formats import filetype_of, open_paged
 from pdf_reader.pdf.models import (
     BBox,
     Document,
@@ -63,8 +64,9 @@ def load_pdf(
     """
     if not path.is_file():
         raise PdfNotFoundError(path)
+    filetype = filetype_of(path)
     try:
-        pdf = pymupdf.open(path, filetype="pdf")
+        pdf = open_paged(path, filetype=filetype)
     except (pymupdf.FileDataError, pymupdf.EmptyFileError) as exc:
         log.warning("Corrupt PDF %s: %s", path, exc)
         raise CorruptPdfError(path) from exc
@@ -87,7 +89,7 @@ def load_pdf(
             log.warning("Failed to extract text from %s", path, exc_info=True)
             raise CorruptPdfError(path) from exc
 
-    pages = _recognize_scanned_pages(path, pages, progress, ocr_cache, file_hash)
+    pages = _recognize_scanned_pages(path, pages, progress, ocr_cache, file_hash, filetype)
     document = Document(path=path, title=title, pages=tuple(pages))
     if not document.has_text:
         scanned = any(page.blocks == () and page.has_images for page in pages)
@@ -102,6 +104,7 @@ def _recognize_scanned_pages(
     progress: ProgressCallback | None,
     cache: OcrCache | None,
     file_hash: str | None,
+    filetype: str = "pdf",
 ) -> list[Page]:
     """OCR every scanned page (in parallel), reusing and updating saved results."""
     scanned = [p.number for p in pages if p.has_images and not p.blocks]
@@ -114,7 +117,7 @@ def _recognize_scanned_pages(
     missing = [n for n in scanned if n not in saved]
     if missing:
         started = time.perf_counter()
-        saved.update(recognize_pages(data, missing, progress))
+        saved.update(recognize_pages(data, missing, progress, filetype=filetype))
         log.info("OCR of %d page(s) took %.1fs", len(missing), time.perf_counter() - started)
         if cache is not None and file_hash:
             cache.save(file_hash, saved)

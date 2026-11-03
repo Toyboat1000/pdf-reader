@@ -31,6 +31,8 @@ class WordBox:
             highlighted); False if it was only attributed for clicking (e.g. a
             removed page number next to the sentence).
         text: The word as printed on the page (for copying).
+        word: Index of the spoken word it shows, in the sentence's ``text.split()``,
+            for word-by-word highlighting; -1 if it isn't spoken.
     """
 
     page: int
@@ -38,6 +40,7 @@ class WordBox:
     sentence: int
     spoken: bool
     text: str = ""
+    word: int = -1
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,26 @@ class WordMap:
                     if word.spoken:
                         self._by_sentence.setdefault(word.sentence, []).append(word)
         return list(self._by_sentence.get(sentence, []))
+
+    def word_boxes(self, sentence: int, word: int) -> list[tuple[int, BBox]]:
+        """Return where spoken word ``word`` of a sentence is, as ``(page, bbox)`` pieces.
+
+        Each piece spans the word's width and its line's band (so it lines up with
+        the sentence highlight). A word split over two lines has two pieces.
+        """
+        boxes = [b for b in self.sentence_boxes(sentence) if b.word == word]
+        if not boxes:
+            return []
+        bands = self.sentence_lines(sentence)
+        pieces: list[tuple[int, BBox]] = []
+        for page, (x0, y0, x1, y1) in line_bands(boxes):
+            centre = (y0 + y1) / 2
+            band = next(
+                (b for p, b in bands if p == page and b[1] <= centre <= b[3]),
+                (x0, y0, x1, y1),
+            )
+            pieces.append((page, (x0, band[1], x1, band[3])))
+        return pieces
 
     def sentence_lines(self, sentence: int) -> list[tuple[int, BBox]]:
         """Return one even band per line a sentence covers, as ``(page, bbox)``.
@@ -154,22 +177,26 @@ def build_word_map(document: Document, sentences: Sequence[Segment]) -> WordMap 
         if not page.words:
             continue
         on_page = [(i, s) for i, s in enumerate(sentences) if s.page == page.number]
-        tokens: list[tuple[str, int]] = [
-            (norm, i) for i, s in on_page for word in s.text.split() if (norm := _norm(word))
+        # (normalized word, sentence, index of the word in the sentence)
+        tokens: list[tuple[str, int, int]] = [
+            (norm, i, k)
+            for i, s in on_page
+            for k, word in enumerate(s.text.split())
+            if (norm := _norm(word))
         ]
         words = _reading_order(page.words, [s.bbox for _, s in on_page])
         ocr = [_norm(w.text) for w in words]
-        owner: list[int | None] = [None] * len(ocr)
-        matcher = SequenceMatcher(None, [t for t, _ in tokens], ocr, autojunk=False)
+        owner: list[tuple[int, int] | None] = [None] * len(ocr)
+        matcher = SequenceMatcher(None, [t for t, _, _ in tokens], ocr, autojunk=False)
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag == "equal":
                 for k in range(j2 - j1):
-                    owner[j1 + k] = tokens[i1 + k][1]
+                    owner[j1 + k] = tokens[i1 + k][1:]
             elif tag == "replace":
                 # OCR and spoken words differ here ("Good- bye" vs "Goodbye"): spread the
-                # OCR words over the sentences of the spoken words they stand for.
+                # OCR words over the spoken words they stand for.
                 for k in range(j2 - j1):
-                    owner[j1 + k] = tokens[i1 + k * (i2 - i1) // (j2 - j1)][1]
+                    owner[j1 + k] = tokens[i1 + k * (i2 - i1) // (j2 - j1)][1:]
             # "insert": OCR words that aren't spoken (removed page numbers, headers).
         by_page[page.number] = _attribute(page.number, words, owner)
     return WordMap(by_page)
@@ -199,14 +226,17 @@ def _reading_order(words: Sequence[OcrWord], block_boxes: list[BBox | None]) -> 
     return [words[i] for i in order]
 
 
-def _attribute(page: int, words: Sequence, owner: list[int | None]) -> list[WordBox]:
-    """Give every word a sentence: spoken words keep theirs; others borrow a neighbour's."""
-    previous: list[int | None] = []
+def _attribute(page: int, words: Sequence, owner: list[tuple[int, int] | None]) -> list[WordBox]:
+    """Give every word a sentence: spoken words keep theirs; others borrow a neighbour's.
+
+    ``owner`` holds ``(sentence, spoken word index)`` for words matched to the text.
+    """
+    previous: list[tuple[int, int] | None] = []
     last = None
     for o in owner:
         last = o if o is not None else last
         previous.append(last)
-    following: list[int | None] = [None] * len(owner)
+    following: list[tuple[int, int] | None] = [None] * len(owner)
     nxt = None
     for i in range(len(owner) - 1, -1, -1):
         nxt = owner[i] if owner[i] is not None else nxt
@@ -214,15 +244,17 @@ def _attribute(page: int, words: Sequence, owner: list[int | None]) -> list[Word
 
     boxes: list[WordBox] = []
     for i, word in enumerate(words):
-        if owner[i] is not None:
-            boxes.append(WordBox(page, word.bbox, owner[i], True, word.text))
+        matched = owner[i]
+        if matched is not None:
+            boxes.append(WordBox(page, word.bbox, matched[0], True, word.text, matched[1]))
             continue
         before, after = previous[i], following[i]
-        if before is not None and before == after:
-            # Inside a sentence (e.g. half of a hyphenated word): highlight it too.
-            boxes.append(WordBox(page, word.bbox, before, True, word.text))
+        if before is not None and after is not None and before[0] == after[0]:
+            # Inside a sentence (e.g. half of a hyphenated word): highlight it too,
+            # together with the word before it.
+            boxes.append(WordBox(page, word.bbox, before[0], True, word.text, before[1]))
         elif before is not None or after is not None:
-            sentence = before if before is not None else after
-            assert sentence is not None
-            boxes.append(WordBox(page, word.bbox, sentence, False, word.text))
+            neighbour = before if before is not None else after
+            assert neighbour is not None
+            boxes.append(WordBox(page, word.bbox, neighbour[0], False, word.text))
     return boxes

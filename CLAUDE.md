@@ -23,6 +23,7 @@ uv run ruff check .             # lint; must pass with no warnings
 uv run ruff format .            # format; run before committing
 uv run python scripts/make_sample_pdf.py sample.pdf            # simple test PDF
 uv run python scripts/make_sample_pdf.py --layout layout.pdf    # columns, footnotes
+uv run python scripts/make_sample_documents.py book.epub        # also .docx, .html
 ```
 
 Add dependencies with `uv add <pkg>` (or `uv add --dev <pkg>`); commit `uv.lock`.
@@ -97,6 +98,24 @@ ui  ->  core  ->  audio  ->  tts
 - **Home page (v0.7)**: `ui/home_view.HomeView` (recents grid with covers from
   `library/thumbnails.save_thumbnail`, made by the session when a PDF opens; progress
   from `DocumentRecord.page_count/sentence_count`). `MainWindow._home_action` toggles it.
+- **v0.8**: `tts/base.Speech` (samples + `word_starts`, one per `text.split()` word);
+  `TtsEngine.synthesize_timed` (default estimates by length); `KokoroEngine` uses
+  `create_timed`, groups phonemes into spoken words (`spoken_words`), and
+  `tts/word_timing.align_word_starts` matches them to written words (banded DP);
+  speeds above 2x are made at 2x and time-stretched (`tts/stretch.time_stretch`,
+  WSOLA). `AudioChunk.word_starts`; `AudioPlayer.playhead()` (latency-compensated);
+  `PlaybackController.current_word()` / `heard_position()`; `ReadingSession`
+  `current_word()` and `listening_time()`. `WordBox.word` + `WordMap.word_boxes()`
+  for page images; `DocumentView`/`PageView.highlight_word()`; `MainWindow._on_tick`
+  polls every 30 ms while playing. Formats: `pdf/formats.open_paged` (every PyMuPDF
+  open goes through it, e-books laid out on `EBOOK_PAGE`); `sources/` (docx, html
+  article extraction, text files, `web.fetch` with truststore) produce `TextSource`;
+  `ReadingSession.open_document` dispatches by suffix, `open_url` fetches (the only
+  network use besides the model download). `audio/export.export_audio` (MP3 via
+  lameenc, WAV) and `ReadingSession.start_export`. `ui/theme.apply_theme(app, theme)`
+  (system/light/sepia/dark) and the bundled OpenDyslexic in `ui/fonts/`.
+  `system/media_controls.MediaControls` (Windows SMTC; `MainWindow(media_controls=True)`
+  only in the app, never in tests).
 - **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
   reading position, bookmarks) in `library.json`, thread-safe, written atomically by
   `flush()` (the session flushes on pause, stop, document switch, bookmark changes,

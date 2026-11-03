@@ -18,14 +18,18 @@ State machine::
 passes through ``LOADING``.
 """
 
+import hashlib
 import logging
+import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 
+from pdf_reader.audio.export import ExportCancelledError, ExportError, export_audio
 from pdf_reader.audio.playback import PlaybackController, PlaybackListener
+from pdf_reader.config.constants import APP_NAME
 from pdf_reader.config.settings import clamp_speed
 from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.word_map import build_word_map
@@ -33,7 +37,9 @@ from pdf_reader.library import Anchor, Bookmark, DocumentRecord, LibraryStore
 from pdf_reader.library.anchors import file_id, make_anchor, resolve
 from pdf_reader.library.thumbnails import save_thumbnail
 from pdf_reader.pdf import NoTextError, PdfError, load_pdf
+from pdf_reader.pdf.formats import is_paged
 from pdf_reader.pdf.ocr_cache import OcrCache
+from pdf_reader.sources import TEXT_SUFFIXES, SourceError, fetch, read_text_document
 from pdf_reader.text.pipeline import TextPipeline
 from pdf_reader.tts.base import ModelLoadError, TtsEngine, Voice
 from pdf_reader.tts.download import DownloadCancelledError, DownloadError, RemoteFile
@@ -115,6 +121,15 @@ class SessionListener:
     def on_bookmarks_changed(self, bookmarks: list[Bookmark]) -> None:
         """The current document's bookmarks changed (or a document was opened)."""
 
+    def on_export_progress(self, done: int, total: int) -> None:
+        """Saving audio: ``done`` of ``total`` sentences so far."""
+
+    def on_export_finished(self, path: Path) -> None:
+        """The audio file was saved."""
+
+    def on_export_failed(self, message: str, cancelled: bool) -> None:
+        """Saving audio failed or was cancelled; ``message`` is user-friendly."""
+
 
 type ControllerFactory = Callable[..., PlaybackController]
 
@@ -133,12 +148,15 @@ class ReadingSession(PlaybackListener):
         library: LibraryStore | None = None,
         ocr_cache: OcrCache | None = None,
         thumbnail_dir: Path | None = None,
+        download_dir: Path | None = None,
         controller_factory: ControllerFactory = PlaybackController,
     ) -> None:
         self._engine = engine
         self._library = library
         self._ocr_cache = ocr_cache
         self._thumbnail_dir = thumbnail_dir
+        self._download_dir = download_dir or Path(tempfile.gettempdir()) / f"{APP_NAME} downloads"
+        self._export_cancel: threading.Event | None = None
         self._listener = listener
         self._pipeline = pipeline or TextPipeline()
         self._lock = threading.RLock()
@@ -278,60 +296,130 @@ class ReadingSession(PlaybackListener):
     # ----------------------------------------------------------- documents
 
     def open_document(self, path: Path) -> None:
-        """Open a PDF in the background, stopping any current playback.
+        """Open a document file in the background, stopping any current playback.
 
-        Reports ``on_document_loaded`` or ``on_document_error``. If another document
-        is opened before this one finishes loading, this one's result is ignored.
+        PDFs and e-books (EPUB, ...) are read as pages; Word documents, saved web
+        pages, and text files as flowing text. Reports ``on_document_loaded`` or
+        ``on_document_error``. If another document is opened before this one
+        finishes loading, this one's result is ignored.
+        """
+        request = self._begin_open()
+        self._start_thread(
+            "document-load", lambda: self._finish_open(request, path, self._load_file(path))
+        )
+
+    def open_url(self, address: str) -> None:
+        """Open a web page (its article) or a linked PDF or e-book, like :meth:`open_document`.
+
+        This is the only operation that uses the internet.
         """
         request = self._begin_open()
 
         def task() -> None:
+            path: Path | None = None
             try:
-                file_hash = self._document_id(path)
-                document = load_pdf(
-                    path,
-                    progress=self._listener.on_loading_progress,
-                    ocr_cache=self._ocr_cache,
-                    file_hash=file_hash,
-                )
-                sentences = tuple(self._pipeline.process_document(document))
-                if not sentences:
-                    raise NoTextError(path)
-                result: ReadingDocument | str = ReadingDocument.from_pdf(
-                    document,
-                    sentences,
-                    doc_id=file_hash if self._library is not None else None,
-                    word_map=build_word_map(document, sentences),
-                )
-                if self._thumbnail_dir is not None and file_hash:
-                    save_thumbnail(path, self.thumbnail_path(file_hash))
-            except PdfError as exc:
-                result = exc.user_message
+                fetched = fetch(address, self._download_dir)
+            except SourceError as exc:
+                result: ReadingDocument | str = exc.user_message
             except Exception as exc:
-                log.exception("Unexpected error opening %s", path)
-                result = f"Something went wrong while opening this file: {exc}"
+                log.exception("Unexpected error opening %s", address)
+                result = f"Something went wrong while opening this link: {exc}"
+            else:
+                if fetched.file is not None:
+                    path = fetched.file
+                    result = self._load_file(path)
+                else:
+                    assert fetched.article is not None
+                    doc_id = None
+                    if self._library is not None:
+                        doc_id = "web-" + hashlib.sha256(fetched.url.encode()).hexdigest()
+                    result = self._text_document(
+                        fetched.article.text,
+                        title=fetched.article.title,
+                        doc_id=doc_id,
+                        source_url=fetched.url,
+                    )
             self._finish_open(request, path, result)
 
         self._start_thread("document-load", task)
 
-    def open_text(self, text: str) -> None:
-        """Open pasted or typed text as a document, like :meth:`open_document`."""
+    def open_text(
+        self,
+        text: str,
+        *,
+        title: str | None = None,
+        doc_id: str | None = None,
+        source_url: str | None = None,
+    ) -> None:
+        """Open pasted or typed text as a document, like :meth:`open_document`.
+
+        ``title``, ``doc_id``, and ``source_url`` are kept for text that came from
+        somewhere (re-reading a web page with new settings, for example).
+        """
         request = self._begin_open()
 
         def task() -> None:
-            try:
-                sentences = tuple(self._pipeline.process_text(text))
-                result: ReadingDocument | str = (
-                    ReadingDocument.from_text(text, sentences)
-                    if sentences
-                    else "There's no text to read. Paste or type some text first."
-                )
-            except Exception as exc:
-                log.exception("Unexpected error processing pasted text")
-                result = f"Something went wrong while preparing this text: {exc}"
+            result = self._text_document(
+                text, title=title, doc_id=doc_id, source_url=source_url, pasted=True
+            )
             self._finish_open(request, None, result)
 
         self._start_thread("document-load", task)
+
+    def _load_file(self, path: Path) -> ReadingDocument | str:
+        """Read a document file. Returns the document or a user-friendly error."""
+        try:
+            file_hash = self._document_id(path)
+            doc_id = file_hash if self._library is not None else None
+            if path.suffix.lower() in TEXT_SUFFIXES:
+                source = read_text_document(path)
+                return self._text_document(
+                    source.text, title=source.title, path=path, doc_id=doc_id
+                )
+            document = load_pdf(
+                path,
+                progress=self._listener.on_loading_progress,
+                ocr_cache=self._ocr_cache,
+                file_hash=file_hash,
+            )
+            sentences = tuple(self._pipeline.process_document(document))
+            if not sentences:
+                raise NoTextError(path)
+            result = ReadingDocument.from_pdf(
+                document, sentences, doc_id=doc_id, word_map=build_word_map(document, sentences)
+            )
+            if self._thumbnail_dir is not None and file_hash and is_paged(path):
+                save_thumbnail(path, self.thumbnail_path(file_hash))
+            return result
+        except (PdfError, SourceError) as exc:
+            return exc.user_message
+        except Exception as exc:
+            log.exception("Unexpected error opening %s", path)
+            return f"Something went wrong while opening this file: {exc}"
+
+    def _text_document(
+        self,
+        text: str,
+        *,
+        title: str | None = None,
+        path: Path | None = None,
+        doc_id: str | None = None,
+        source_url: str | None = None,
+        pasted: bool = False,
+    ) -> ReadingDocument | str:
+        """Prepare flowing text for reading. Returns the document or a user-friendly error."""
+        try:
+            sentences = tuple(self._pipeline.process_text(text))
+        except Exception as exc:
+            log.exception("Unexpected error processing text")
+            return f"Something went wrong while preparing this text: {exc}"
+        if not sentences:
+            if pasted:
+                return "There's no text to read. Paste or type some text first."
+            return "No readable text was found in this document."
+        return ReadingDocument.from_text(
+            text, sentences, title=title, path=path, doc_id=doc_id, source_url=source_url
+        )
 
     def _begin_open(self) -> int:
         """Stop playback and enter ``LOADING`` for a new document; return its request id."""
@@ -391,8 +479,8 @@ class ReadingSession(PlaybackListener):
         record = self._library.open_document(
             document.doc_id,
             document.title,
-            document.path,
-            page_count=document.page_count,
+            document.path or document.source_url,
+            page_count=document.page_count if document.is_paginated else 0,
             sentence_count=document.sentence_count,
             scanned=document.pdf is not None and document.pdf.is_scanned,
         )
@@ -506,6 +594,40 @@ class ReadingSession(PlaybackListener):
                 self._controller.stop()
                 self._can_resume = False
 
+    def current_word(self) -> tuple[int, int] | None:
+        """Return ``(sentence, word)`` being heard right now, or None if not reading.
+
+        ``word`` indexes the words of the sentence's text (``text.split()``).
+        """
+        with self._lock:
+            if self._state not in (ReadingState.PLAYING, ReadingState.PAUSED):
+                return None
+        return self._controller.current_word()
+
+    def listening_time(self) -> tuple[float, float]:
+        """Return estimated ``(listened, total)`` seconds for the open document.
+
+        Both are at the current speed, from the speaking rate measured so far, and
+        include the part of the current sentence already heard.
+        """
+        with self._lock:
+            document = self._document
+            position = self._position
+            speed = self._speed
+            reading = self._state in (ReadingState.PLAYING, ReadingState.PAUSED)
+            at_end = self._at_end
+        if document is None or not document.sentences:
+            return 0.0, 0.0
+        rate = max(self._controller.chars_per_second * speed, 1.0)
+        total = document.total_characters
+        if at_end:
+            return total / rate, total / rate
+        done = float(document.characters_before(position))
+        heard = self._controller.heard_position() if reading else None
+        if heard is not None and heard[0] == position:
+            done += min(len(document.sentences[position].text), heard[1] * rate)
+        return done / rate, total / rate
+
     def set_voice(self, voice_id: str) -> None:
         """Change the voice; takes effect from the next sentence."""
         with self._lock:
@@ -535,7 +657,14 @@ class ReadingSession(PlaybackListener):
             document = self._document
         if document is None:
             return
-        if document.path is not None:
+        if document.source_url is not None and document.text is not None:
+            self.open_text(
+                document.text,
+                title=document.title,
+                doc_id=document.doc_id,
+                source_url=document.source_url,
+            )
+        elif document.path is not None:
             self.open_document(document.path)
         elif document.text is not None:
             self.open_text(document.text)
@@ -619,6 +748,66 @@ class ReadingSession(PlaybackListener):
             self._library.flush()
         self._listener.on_bookmarks_changed(self.bookmarks())
 
+    # ----------------------------------------------------------- export
+
+    @property
+    def is_exporting(self) -> bool:
+        """Return whether an audio file is being saved."""
+        with self._lock:
+            return self._export_cancel is not None
+
+    def start_export(self, path: Path) -> bool:
+        """Save the open document's speech to ``path`` (.mp3 or .wav) in the background.
+
+        Uses the current voice and speed. Reports ``on_export_progress``, then
+        ``on_export_finished`` or ``on_export_failed``. Reading can go on meanwhile.
+
+        Returns:
+            False if there is nothing to export, the model isn't loaded, or an export
+            is already running.
+        """
+        with self._lock:
+            document = self._document
+            if document is None or not self._engine.is_loaded or self._export_cancel is not None:
+                return False
+            cancel = self._export_cancel = threading.Event()
+            voice, speed = self._voice, self._speed
+
+        def task() -> None:
+            try:
+                export_audio(
+                    self._engine,
+                    document.sentences,
+                    path,
+                    voice=voice,
+                    speed=speed,
+                    title=document.title,
+                    artist=APP_NAME,
+                    progress=self._listener.on_export_progress,
+                    cancel=cancel,
+                )
+            except ExportCancelledError as exc:
+                self._listener.on_export_failed(exc.user_message, cancelled=True)
+            except ExportError as exc:
+                self._listener.on_export_failed(exc.user_message, cancelled=False)
+            except Exception as exc:
+                log.exception("Unexpected export failure")
+                self._listener.on_export_failed(f"Unexpected error: {exc}", cancelled=False)
+            else:
+                self._listener.on_export_finished(path)
+            finally:
+                with self._lock:
+                    self._export_cancel = None
+
+        self._start_thread("audio-export", task)
+        return True
+
+    def cancel_export(self) -> None:
+        """Ask a running export to stop (it stops after the current sentence)."""
+        with self._lock:
+            if self._export_cancel is not None:
+                self._export_cancel.set()
+
     # ----------------------------------------------------------- shutdown
 
     def shutdown(self) -> None:
@@ -626,6 +815,7 @@ class ReadingSession(PlaybackListener):
         with self._lock:
             self._remember_position(flush=True)
         self.cancel_model_download()
+        self.cancel_export()
         self._controller.shutdown()
         for thread in self._threads:
             thread.join(timeout=0.5)

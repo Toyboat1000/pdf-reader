@@ -1,3 +1,3 @@
-"""PDF Reader: read PDF documents aloud with local AI voices."""
+"""PDF Reader: read documents aloud with local AI voices."""
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

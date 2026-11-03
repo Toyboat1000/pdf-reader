@@ -50,7 +50,7 @@ class LibraryStore:
         self,
         doc_id: str,
         title: str,
-        path: Path | None,
+        path: Path | str | None,
         *,
         page_count: int = 0,
         sentence_count: int = 0,

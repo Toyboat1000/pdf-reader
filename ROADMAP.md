@@ -48,9 +48,17 @@ language choice, bookmarks underlined on page images, and zoom controls.
 
 - Let users define how specific words, names, and abbreviations are pronounced.
 
-## 6. Export to MP3
+## 6. Export to MP3 (done, v0.8.0)
 
-- Save a whole document, or a range of pages, as audio files.
+- Save a whole document as an MP3 or WAV file.
+
+Possible refinements: a range of pages, and one track per chapter.
+
+## 6b. Listening experience (done, v0.8.0)
+
+- Word-by-word highlighting, speeds up to 4x, listening time and progress on the
+  player, light/sepia/dark themes, a dyslexia-friendly font, and Windows media keys
+  and media panel.
 
 ## 7. Windows installer
 
@@ -60,6 +68,10 @@ language choice, bookmarks underlined on page images, and zoom controls.
   `pyside6-essentials` instead of the full `pyside6` package, which includes
   QtWebEngine).
 
-## 8. EPUB and DOCX support
+## 8. EPUB, DOCX, and web pages (done, v0.8.0)
 
-- Open and read EPUB e-books and Word documents with the same reading experience.
+- EPUB and other e-books are shown as pages; Word documents, web pages (from a link
+  or saved), Markdown, and text files are read as text.
+
+Possible refinements: a reader view for web pages that need a browser to show their
+content.

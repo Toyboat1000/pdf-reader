@@ -1,8 +1,9 @@
-"""PDF pages shown as images, with the spoken sentence highlighted.
+"""PDF pages shown as images, with the spoken sentence and word highlighted.
 
-Click a word to read from there, hover to preview what a click will play, drag to
-select text and copy it, and zoom with Ctrl + mouse wheel. Works for scanned pages
-(text from OCR) and ordinary PDFs (text from the file) alike.
+The word being spoken glides along the sentence as it is read. Click a word to read
+from there, hover to preview what a click will play, drag to select text and copy
+it, and zoom with Ctrl + mouse wheel. Works for scanned pages (text from OCR) and
+ordinary PDFs (text from the file) alike.
 """
 
 import bisect
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import QAbstractScrollArea, QMenu, QWidget
 
 from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.word_map import WordBox, WordMap, line_bands
+from pdf_reader.pdf.models import BBox
 from pdf_reader.pdf.render import PageRenderer
 
 log = logging.getLogger(__name__)
@@ -82,6 +84,17 @@ class PageView(QAbstractScrollArea):
         self._words_by_page: dict[int, range] = {}  # Page -> its slice of _words.
         self._widest = 0.0
         self._current = -1
+        self._word = -1  # Spoken word of the current sentence, or -1.
+        self._word_pieces: list[tuple[int, BBox]] = []
+        self._word_from: tuple[int, BBox] | None = None  # Where the glide started.
+        self._word_progress = 1.0
+        self._word_glide = QVariantAnimation(self)
+        self._word_glide.setDuration(110)
+        self._word_glide.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._word_glide.setStartValue(0.0)
+        self._word_glide.setEndValue(1.0)
+        self._word_glide.valueChanged.connect(self._on_word_glide)
+        self._tint: QColor | None = None  # Multiplied over pages (sepia), if set.
         self._cache: OrderedDict[tuple[int, float], QPixmap] = OrderedDict()
         self._press_pos: QPoint | None = None
         self._press_word: int | None = None
@@ -133,6 +146,7 @@ class PageView(QAbstractScrollArea):
         self._word_map = None
         self._words = []
         self._current = -1
+        self._clear_word()
         self._hover = -1
         self._selection = None
         self._cache.clear()
@@ -140,6 +154,8 @@ class PageView(QAbstractScrollArea):
 
     def highlight(self, index: int) -> None:
         """Highlight sentence ``index`` and scroll it into view if needed."""
+        if index != self._current:
+            self._clear_word()
         self._current = index
         if self._word_map is not None and self._tops:
             lines = self._word_map.sentence_lines(index)
@@ -151,6 +167,63 @@ class PageView(QAbstractScrollArea):
                 visible_bottom = bar.value() + height - _PLAYER_CLEARANCE
                 if top < bar.value() + height * 0.1 or bottom > visible_bottom:
                     self._glide_to(int(top - height / 3))
+        self.viewport().update()
+
+    def highlight_word(self, sentence: int, word: int) -> None:
+        """Mark word ``word`` of the current sentence as the one being spoken.
+
+        Ignored unless ``sentence`` is the highlighted sentence. Pass ``word`` -1 to
+        remove the word highlight.
+        """
+        if sentence != self._current or word == self._word or self._word_map is None:
+            return
+        if word < 0:
+            self._clear_word()
+            self.viewport().update()
+            return
+        pieces = self._word_map.word_boxes(sentence, word)
+        if not pieces:
+            return  # Not printed on the page (e.g. a number spoken as words): keep the last.
+        previous = self._word_pieces[-1] if self._word_pieces else None
+        self._word = word
+        self._word_pieces = pieces
+        first = pieces[0]
+        if previous is not None and previous[0] == first[0] and _same_band(previous[1], first[1]):
+            self._word_from = previous
+            self._word_glide.stop()
+            self._word_glide.start()
+        else:
+            self._word_from = None
+            self._word_progress = 1.0
+        self._keep_word_visible()
+        self.viewport().update()
+
+    def _clear_word(self) -> None:
+        self._word = -1
+        self._word_pieces = []
+        self._word_from = None
+        self._word_progress = 1.0
+        self._word_glide.stop()
+
+    def _on_word_glide(self, value: float) -> None:
+        self._word_progress = float(value)
+        self.viewport().update()
+
+    def _keep_word_visible(self) -> None:
+        """Scroll on when a long sentence's spoken word moves below the visible area."""
+        if not self._word_pieces or not self._tops:
+            return
+        page, box = self._word_pieces[-1]
+        bottom = self._tops[page - 1] + box[3] * self._scale
+        top = self._tops[page - 1] + box[1] * self._scale
+        bar = self.verticalScrollBar()
+        height = self.viewport().height()
+        if bottom > bar.value() + height - _PLAYER_CLEARANCE or top < bar.value():
+            self._glide_to(int(top - height / 3))
+
+    def set_page_tint(self, tint: QColor | None) -> None:
+        """Tint the pages (multiplied, like paper of that colour), or show them as is."""
+        self._tint = tint
         self.viewport().update()
 
     def _glide_to(self, value: int) -> None:
@@ -261,6 +334,10 @@ class PageView(QAbstractScrollArea):
                 painter.fillRect(rect, Qt.GlobalColor.white)
             else:
                 painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
+            if self._tint is not None:
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
+                painter.fillRect(rect, self._tint)
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         self._draw_selection(painter)
         accent = self.palette().color(QPalette.ColorRole.Accent)
         if self._hover >= 0 and self._hover != self._current and self._hover_opacity > 0:
@@ -271,10 +348,42 @@ class PageView(QAbstractScrollArea):
             if hover_pills:
                 self._draw_badge(painter, hover_pills[0], accent, self._hover_opacity)
         if self._current >= 0:
+            # With a spoken word shown, the sentence steps back so the word stands out.
+            word_shown = bool(self._word_pieces)
             self._draw_pills(
-                painter, self._pills(self._current), accent, fill=0.32, outline=0.9, opacity=1.0
+                painter,
+                self._pills(self._current),
+                accent,
+                fill=0.18 if word_shown else 0.32,
+                outline=0.55 if word_shown else 0.9,
+                opacity=1.0,
             )
+            if word_shown:
+                self._draw_word(painter, accent)
         painter.end()
+
+    def _draw_word(self, painter: QPainter, accent: QColor) -> None:
+        """Draw the spoken word as a solid pill, gliding from the previous word."""
+        pieces = list(self._word_pieces)
+        if self._word_from is not None and self._word_progress < 1.0:
+            t = self._word_progress
+            page, target = pieces[0]
+            start = self._word_from[1]
+            x0, y0, x1, y1 = (a + (b - a) * t for a, b in zip(start, target, strict=True))
+            pieces[0] = (page, (x0, y0, x1, y1))
+        fill = QColor(accent)
+        fill.setAlphaF(0.42)
+        edge = QColor(accent)
+        edge.setAlphaF(0.95)
+        painter.setPen(QPen(edge, 1.2))
+        painter.setBrush(fill)
+        for page, box in pieces:
+            rect = self._to_view(page, box)
+            pad_y = rect.height() * 0.10
+            pad_x = rect.height() * 0.12
+            pill = rect.adjusted(-pad_x, -pad_y, pad_x, pad_y)
+            radius = pill.height() * 0.28
+            painter.drawRoundedRect(pill, radius, radius)
 
     def _visible_pages(self) -> range:
         """Indexes of the pages that intersect the viewport (binary search)."""
@@ -558,6 +667,12 @@ class PageView(QAbstractScrollArea):
     def _on_fade(self, value: float) -> None:
         self._hover_opacity = float(value)
         self.viewport().update()
+
+
+def _same_band(a: BBox, b: BBox) -> bool:
+    """Return whether two boxes are on the same line (their bands overlap mostly)."""
+    overlap = min(a[3], b[3]) - max(a[1], b[1])
+    return overlap > 0.5 * min(a[3] - a[1], b[3] - b[1])
 
 
 def words_to_text(words: list[WordBox]) -> str:

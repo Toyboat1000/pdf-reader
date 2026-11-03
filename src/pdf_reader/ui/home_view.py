@@ -1,8 +1,8 @@
 """The home page: start something new, or continue where you left off.
 
-Two calm starting points sit at the top (open a PDF, or paste text), and below them
-the recently read documents appear as covers made from their first page, with a
-slim bar showing how far you've got. Everything is one click away.
+Two calm starting points sit at the top (open a document, or paste text or a web
+link), and below them the recently read documents appear as covers made from their
+first page, with a slim bar showing how far you've got. Everything is one click away.
 """
 
 from collections.abc import Callable
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from pdf_reader.library import DocumentRecord
+from pdf_reader.sources import is_web_address
 from pdf_reader.ui.icons import Glyph, make_icon
 
 _CARD_WIDTH = 176
@@ -122,15 +123,16 @@ class _ProgressLine(QWidget):
 class DocumentCard(QFrame):
     """A recently read document: cover, title, details, and progress."""
 
-    clicked = Signal(str)  # Path.
+    clicked = Signal(str)  # Path or web address.
     remove_requested = Signal(str)  # Document id.
 
     def __init__(self, record: DocumentRecord, cover: Path | None) -> None:
         super().__init__()
         self.setObjectName("doc-card")
         self.record = record
-        path = Path(record.path) if record.path else None
-        self._available = path is not None and path.is_file()
+        self._is_link = record.path is not None and is_web_address(record.path)
+        path = Path(record.path) if record.path and not self._is_link else None
+        self._available = self._is_link or (path is not None and path.is_file())
         self.setCursor(
             Qt.CursorShape.PointingHandCursor if self._available else Qt.CursorShape.ArrowCursor
         )
@@ -161,6 +163,8 @@ class DocumentCard(QFrame):
         if not self._available:
             return "File not found"
         parts = []
+        if self._is_link:
+            parts.append("Web page")
         if self.record.scanned:
             parts.append("Scanned")
         if self.record.position is not None and self.record.page_count:
@@ -200,8 +204,9 @@ class _ActionCard(QFrame):
         super().__init__()
         self.setObjectName("drop-card")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        icon = QLabel()
-        icon.setPixmap(make_icon(glyph, self).pixmap(QSize(34, 34)))
+        self._glyph = glyph
+        self._icon = icon = QLabel()
+        self.refresh_icon()
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         heading = QLabel(title)
         heading.setObjectName("card-heading")
@@ -219,6 +224,10 @@ class _ActionCard(QFrame):
         column.addWidget(detail)
         column.addStretch()
 
+    def refresh_icon(self) -> None:
+        """Draw the icon in the current theme's colours."""
+        self._icon.setPixmap(make_icon(self._glyph, self).pixmap(QSize(34, 34)))
+
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Trigger the action."""
         if event.button() == Qt.MouseButton.LeftButton:
@@ -234,12 +243,13 @@ class _PasteCard(QFrame):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("paste-card")
-        heading = QLabel("Paste or type text")
+        heading = QLabel("Paste text or a link")
         heading.setObjectName("card-heading")
         self.editor = QPlainTextEdit()
         self.editor.setObjectName("paste-editor")
         self.editor.setPlaceholderText(
-            "Paste an article, an email, notes \u2014 anything you'd like to hear\u2026"
+            "Paste an article, an email, notes, or a web link \u2014 anything you'd like "
+            "to hear\u2026"
         )
         self.editor.textChanged.connect(self._update)
         paste = QPushButton("Paste from Clipboard")
@@ -297,9 +307,10 @@ class HomeView(QScrollArea):
 
         open_card = _ActionCard(
             Glyph.OPEN,
-            "Open a PDF",
-            "Click to browse, or drop a file anywhere.\nScanned PDFs work too.",
+            "Open a document",
+            "PDF, EPUB, Word, or web page. Click to browse,\nor drop a file anywhere.",
         )
+        self._open_card = open_card
         open_card.clicked.connect(self.open_requested)
         self.paste_card = _PasteCard()
         self.paste_card.listen_requested.connect(self.listen_text_requested)
@@ -339,6 +350,10 @@ class HomeView(QScrollArea):
         page.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self.setWidget(page)
         self.set_recents([], lambda _doc_id: None)
+
+    def refresh_style(self) -> None:
+        """Redraw icons after the theme changed."""
+        self._open_card.refresh_icon()
 
     def set_recents(
         self, records: list[DocumentRecord], cover_for: Callable[[str], Path | None]

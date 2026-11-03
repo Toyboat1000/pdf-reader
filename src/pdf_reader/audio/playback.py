@@ -17,6 +17,7 @@ Recently generated audio is cached, so going back and forth between nearby sente
 starts playing immediately.
 """
 
+import bisect
 import logging
 import threading
 from collections import OrderedDict
@@ -28,7 +29,7 @@ import numpy as np
 
 from pdf_reader.audio.player import PREVIEW_INDEX, AudioChunk, AudioPlayer, PlayerListener
 from pdf_reader.config.settings import clamp_speed
-from pdf_reader.tts.base import AudioArray, SynthesisCancelledError, TtsEngine, TtsError
+from pdf_reader.tts.base import AudioArray, Speech, SynthesisCancelledError, TtsEngine, TtsError
 
 log = logging.getLogger(__name__)
 
@@ -44,8 +45,13 @@ PARAGRAPH_PAUSE_SECONDS = 0.55
 CLAUSE_PAUSE_SECONDS = 0.1
 """Silence after a piece of a long sentence that was split."""
 
+DEFAULT_CHARS_PER_SECOND = 15.0
+"""Typical speaking rate at 1x, in characters per second, until it has been measured."""
+
 _CACHE_SIZE = 12
 _MAX_CONSECUTIVE_FAILURES = 3
+_RATE_MIN_CHARS = 20  # Shorter sentences say little about the speaking rate.
+_RATE_SMOOTHING = 0.15
 _QUIET_LEVEL = 0.01  # Relative to the chunk's peak.
 
 
@@ -132,7 +138,8 @@ class PlaybackController(PlayerListener):
         self._needs_restart = True  # The player holds no audio for the current position.
         self._preview: tuple[str, str, float] | None = None
         self._busy: _Job | None = None  # Job being synthesized right now.
-        self._cache: OrderedDict[_CacheKey, AudioArray] = OrderedDict()
+        self._cache: OrderedDict[_CacheKey, Speech] = OrderedDict()
+        self._chars_per_second = DEFAULT_CHARS_PER_SECOND
         self._failures = 0
         self._shutdown = False
 
@@ -152,6 +159,39 @@ class PlaybackController(PlayerListener):
         """Return the current speed multiplier."""
         with self._cond:
             return self._speed
+
+    @property
+    def chars_per_second(self) -> float:
+        """Return the measured speaking rate at 1x, in characters per second."""
+        with self._cond:
+            return self._chars_per_second
+
+    def current_word(self) -> tuple[int, int] | None:
+        """Return ``(sentence, word)`` being heard now, or None.
+
+        ``word`` indexes the sentence's ``text.split()``. Returns None when nothing
+        from the document is playing (stopped, or a voice preview).
+        """
+        head = self._heard_chunk()
+        if head is None or not head[0].word_starts:
+            return None
+        chunk, seconds = head
+        word = bisect.bisect_right(chunk.word_starts, seconds) - 1
+        return chunk.index, max(word, 0)
+
+    def heard_position(self) -> tuple[int, float] | None:
+        """Return ``(sentence, seconds into it)`` being heard now, or None."""
+        head = self._heard_chunk()
+        return (head[0].index, head[1]) if head is not None else None
+
+    def _heard_chunk(self) -> tuple[AudioChunk, float] | None:
+        head = self._player.playhead()
+        if head is None:
+            return None
+        with self._cond:
+            if head[0].epoch != self._epoch or head[0].index == PREVIEW_INDEX:
+                return None
+        return head
 
     def set_script(self, script: Sequence[Speakable]) -> None:
         """Replace the sentences to read, stopping any current playback."""
@@ -334,10 +374,12 @@ class PlaybackController(PlayerListener):
         """Queue the next sentence straight from the cache, if it is there."""
         if self._next_index >= len(self._script):
             return False
-        samples = self._cache.get((self._next_index, self._voice, self._speed))
-        if samples is None:
+        speech = self._cache.get((self._next_index, self._voice, self._speed))
+        if speech is None:
             return False
-        self._player.offer(AudioChunk(self._next_index, self._epoch, samples))
+        self._player.offer(
+            AudioChunk(self._next_index, self._epoch, speech.samples, speech.word_starts)
+        )
         self._next_index += 1
         return True
 
@@ -355,12 +397,12 @@ class PlaybackController(PlayerListener):
                 job = self._take_job_locked()
                 self._busy = job
             try:
-                samples, failed = self._synthesize(job)
+                speech, failed = self._synthesize(job)
             finally:
                 with self._cond:
                     self._busy = None
-            if samples is not None:
-                self._deliver(job, samples, failed)
+            if speech is not None:
+                self._deliver(job, speech, failed)
 
     def _take_job_locked(self) -> _Job:
         if self._preview is not None:
@@ -373,33 +415,30 @@ class PlaybackController(PlayerListener):
         self._next_index += 1
         return job
 
-    def _synthesize(self, job: _Job) -> tuple[AudioArray | None, bool]:
+    def _synthesize(self, job: _Job) -> tuple[Speech | None, bool]:
         """Run the engine. Returns ``(None, False)`` if the job was cancelled."""
         try:
-            raw = self._engine.synthesize(job.text, job.voice, job.speed)
+            raw = self._engine.synthesize_timed(job.text, job.voice, job.speed)
         except SynthesisCancelledError:
             log.debug("Synthesis of %d cancelled", job.index)
             return None, False
         except TtsError:
             log.exception("Could not synthesize sentence %d", job.index)
-            return np.zeros(0, dtype=np.float32), True
-        if job.ends_paragraph:
-            pause = PARAGRAPH_PAUSE_SECONDS
-        elif job.ends_sentence:
-            pause = SENTENCE_PAUSE_SECONDS
-        else:
-            pause = CLAUSE_PAUSE_SECONDS
-        # Faster reading gets proportionally shorter pauses, but never rushed ones.
-        pause /= max(job.speed, 1.0) ** 0.6
-        samples = ensure_trailing_silence(raw, self._engine.sample_rate, pause)
+            return Speech(np.zeros(0, dtype=np.float32)), True
+        rate = self._engine.sample_rate
+        pause = pause_seconds(job.ends_sentence, job.ends_paragraph, job.speed)
+        speech = Speech(ensure_trailing_silence(raw.samples, rate, pause), raw.word_starts)
         if job.index != PREVIEW_INDEX:
             with self._cond:
-                self._cache[(job.index, job.voice, job.speed)] = samples
+                self._cache[(job.index, job.voice, job.speed)] = speech
                 while len(self._cache) > _CACHE_SIZE:
                     self._cache.popitem(last=False)
-        return samples, False
+                if len(job.text) >= _RATE_MIN_CHARS and raw.samples.size:
+                    measured = len(job.text) * job.speed / (raw.samples.size / rate + pause)
+                    self._chars_per_second += _RATE_SMOOTHING * (measured - self._chars_per_second)
+        return speech, False
 
-    def _deliver(self, job: _Job, samples: AudioArray, failed: bool) -> None:
+    def _deliver(self, job: _Job, speech: Speech, failed: bool) -> None:
         give_up = False
         with self._cond:
             if self._is_stale_locked(job):
@@ -410,12 +449,26 @@ class PlaybackController(PlayerListener):
                 give_up = True
             else:
                 # Offer under the lock so a concurrent seek can't slip in between.
-                self._player.offer(AudioChunk(job.index, job.epoch, samples))
+                self._player.offer(
+                    AudioChunk(job.index, job.epoch, speech.samples, speech.word_starts)
+                )
         if give_up:
             self._listener.on_playback_error(
                 "Speech generation failed several times in a row. Please try another "
                 "voice, or restart the app."
             )
+
+
+def pause_seconds(ends_sentence: bool, ends_paragraph: bool, speed: float) -> float:
+    """Return the silence that follows a sentence (or a piece of one) at ``speed``."""
+    if ends_paragraph:
+        pause = PARAGRAPH_PAUSE_SECONDS
+    elif ends_sentence:
+        pause = SENTENCE_PAUSE_SECONDS
+    else:
+        pause = CLAUSE_PAUSE_SECONDS
+    # Faster reading gets proportionally shorter pauses, but never rushed ones.
+    return pause / max(speed, 1.0) ** 0.6
 
 
 def ensure_trailing_silence(samples: AudioArray, sample_rate: int, seconds: float) -> AudioArray:

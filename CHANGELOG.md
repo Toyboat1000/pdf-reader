@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-03
+
+Word-by-word highlighting, more formats, faster speeds, export, themes, and media keys.
+
+### Added
+
+- Word-by-word highlighting: the word being spoken glides along the sentence, on page
+  images and in the text view (View > Highlight Each Word as It's Read). Timings come
+  from the voice model and are matched to the written words, so "e.g." or "1990"
+  (spoken as several words) stay in step.
+- More formats: EPUB, MOBI, FB2, XPS, and CBZ (shown as pages), Word documents
+  (.docx), saved web pages, Markdown, and text files.
+- Web links: File > Open Link (Ctrl+L), or paste or drop a link, to listen to a web
+  page's article (menus, ads, and comments are left out) or to open an online PDF or
+  e-book. Web pages appear on the home page and resume where you stopped.
+- Listening time on the player: time listened, time left, percentage, and "12 min
+  left", estimated from the measured speaking rate at the current speed.
+- Speeds up to 4x: above 2x, speech is time-stretched with the voice's pitch kept.
+- Export Audio (File menu, Ctrl+Shift+S): save the document as MP3 or WAV, with its
+  title in the file, while you keep reading.
+- Themes: system, light, sepia (pages are warmed too), and dark (View > Theme).
+- Dyslexia-friendly font (OpenDyslexic, SIL Open Font License) for the text view.
+- Windows media integration: media keys and headset buttons control reading, and the
+  Windows media panel shows the document's title and cover.
+
+### Changed
+
+- Opening links checks website certificates with Windows (like browsers on the PC).
+
 ## [0.7.0] - 2026-11-02
 
 A home page, much faster scanned PDFs, and smoother, more natural speech.

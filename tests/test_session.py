@@ -249,10 +249,10 @@ def test_voice_and_speed_are_forwarded(h: Harness, pdf: Path) -> None:
     h.load_model()
     h.open(pdf)
     h.session.set_speed(5.0)
-    assert h.session.speed == 2.0
+    assert h.session.speed == 4.0
     h.session.set_voice("am_adam")
     h.session.play()
-    assert wait_until(lambda: ("Sentence 0.", "am_adam", 2.0) in h.engine.calls)
+    assert wait_until(lambda: ("Sentence 0.", "am_adam", 4.0) in h.engine.calls)
 
 
 def test_opening_new_document_stops_playback(h: Harness, pdf: Path, tmp_path: Path) -> None:

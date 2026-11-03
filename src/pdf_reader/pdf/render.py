@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pymupdf
 
+from pdf_reader.pdf.formats import filetype_of, open_paged
+
 
 @dataclass(frozen=True, slots=True)
 class RenderedPage:
@@ -28,7 +30,7 @@ class PageRenderer:
 
     def __init__(self, path: Path) -> None:
         # Read into memory so the file isn't locked: it can be moved or renamed while open.
-        self._pdf = pymupdf.open(stream=path.read_bytes(), filetype="pdf")
+        self._pdf = open_paged(data=path.read_bytes(), filetype=filetype_of(path))
 
     def render(self, page_number: int, zoom: float) -> RenderedPage:
         """Render 1-based ``page_number`` at ``zoom`` pixels per PDF point."""

@@ -3,7 +3,6 @@
 import logging
 import sys
 from collections.abc import Sequence
-from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
@@ -25,7 +24,7 @@ from pdf_reader.text.pipeline import build_pipeline
 from pdf_reader.tts.kokoro_engine import KokoroEngine
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.main_window import MainWindow
-from pdf_reader.ui.theme import apply_theme
+from pdf_reader.ui.theme import apply_theme, load_bundled_fonts
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +33,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     """Start the GUI and block until it exits.
 
     Args:
-        argv: Command-line arguments; an optional first argument is a PDF to open.
+        argv: Command-line arguments; an optional first argument is a document to open
+            (a file or a web address).
 
     Returns:
         The process exit code.
@@ -47,10 +47,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     app = QApplication(args)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    apply_theme(app)
+    load_bundled_fonts()
 
     settings_path = settings_file()
     settings = load_settings(settings_path)
+    apply_theme(app, settings.theme)
     bridge = SessionBridge()
     session = ReadingSession(
         KokoroEngine(models_dir()),
@@ -60,14 +61,15 @@ def run(argv: Sequence[str] | None = None) -> int:
         library=LibraryStore(library_file()),
         ocr_cache=OcrCache(local_data_dir() / "ocr-cache"),
         thumbnail_dir=local_data_dir() / "thumbnails",
+        download_dir=local_data_dir() / "downloads",
         pipeline=build_pipeline(
             read_parentheses=settings.read_parentheses, skip_asides=settings.skip_asides
         ),
     )
-    window = MainWindow(session, bridge, settings, settings_path)
+    window = MainWindow(session, bridge, settings, settings_path, media_controls=True)
     window.show()
 
-    initial = Path(args[1]) if len(args) > 1 else None
+    initial = args[1] if len(args) > 1 else None
     # Start after the event loop is running so the window paints first.
     QTimer.singleShot(0, lambda: window.start(initial))
     code = app.exec()

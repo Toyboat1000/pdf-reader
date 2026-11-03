@@ -19,7 +19,7 @@ from pdf_reader.library import LibraryStore
 from pdf_reader.tts.download import RemoteFile
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
-from pdf_reader.ui.main_window import MainWindow, _first_pdf
+from pdf_reader.ui.main_window import MainWindow, _first_document
 from pdf_reader.ui.text_dialog import TextInputDialog
 from tests.fakes import FakeEngine, StreamFactory
 
@@ -168,11 +168,13 @@ def test_bad_pdf_shows_message(
     assert "damaged" in shown[0]
 
 
-def test_first_pdf_from_drop() -> None:
+def test_first_document_from_drop() -> None:
     mime = QMimeData()
-    mime.setUrls([QUrl.fromLocalFile("C:/a.txt"), QUrl.fromLocalFile("C:/b.PDF")])
-    assert _first_pdf(mime.urls()) == Path("C:/b.PDF")
-    assert _first_pdf([QUrl("https://example.com/x.pdf")]) is None
+    mime.setUrls([QUrl.fromLocalFile("C:/a.exe"), QUrl.fromLocalFile("C:/b.PDF")])
+    assert _first_document(mime.urls()) == Path("C:/b.PDF")
+    assert _first_document([QUrl.fromLocalFile("C:/book.epub")]) == Path("C:/book.epub")
+    assert _first_document([QUrl("https://example.com/x")]) == "https://example.com/x"
+    assert _first_document([QUrl.fromLocalFile("C:/a.exe")]) is None
 
 
 def test_close_saves_settings(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> None:

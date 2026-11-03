@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pymupdf
 
+from pdf_reader.pdf.formats import filetype_of, open_paged
+
 log = logging.getLogger(__name__)
 
 THUMBNAIL_WIDTH = 320
@@ -20,7 +22,7 @@ def save_thumbnail(pdf_path: Path, destination: Path) -> None:
     if destination.exists():
         return
     try:
-        with pymupdf.open(pdf_path) as pdf:
+        with open_paged(pdf_path, filetype=filetype_of(pdf_path)) as pdf:
             page = pdf[0]
             zoom = THUMBNAIL_WIDTH / max(page.rect.width, 1)
             pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)

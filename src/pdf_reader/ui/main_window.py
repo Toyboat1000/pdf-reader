@@ -1,11 +1,15 @@
 """The main application window: menus, toolbar, document view, and status bar."""
 
 import logging
+import re
+import subprocess
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, QTimer, QUrl, Slot
+from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QCloseEvent,
     QDesktopServices,
     QDragEnterEvent,
@@ -14,12 +18,14 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QSizePolicy,
     QStackedWidget,
     QToolBar,
@@ -27,12 +33,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pdf_reader.audio.export import EXPORT_SUFFIXES
 from pdf_reader.config.constants import APP_NAME, APP_VERSION, PROJECT_URL
 from pdf_reader.config.paths import logs_dir, models_dir
 from pdf_reader.config.settings import Settings, save_settings
 from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.session import ReadingSession, ReadingState
 from pdf_reader.library import Bookmark
+from pdf_reader.pdf.formats import PAGED_FORMATS
+from pdf_reader.sources import TEXT_SUFFIXES, is_web_address
+from pdf_reader.system.media_controls import MediaCommand, MediaControls, PlaybackStatus
 from pdf_reader.text.pipeline import build_pipeline
 from pdf_reader.tts.base import Voice
 from pdf_reader.ui.bookmarks_panel import BookmarksPanel
@@ -45,12 +55,28 @@ from pdf_reader.ui.page_view import PageView
 from pdf_reader.ui.player_bar import PlayerBar
 from pdf_reader.ui.resume_banner import ResumeBanner
 from pdf_reader.ui.text_dialog import TextInputDialog
+from pdf_reader.ui.theme import DYSLEXIC_FONT, SEPIA_PAGE_TINT, THEME_LABELS, apply_theme
 from pdf_reader.ui.toast import Toast
 
 log = logging.getLogger(__name__)
 
 _SPEED_STEP = 5  # Slider units are hundredths, so this is 0.05x.
 _SPEED_APPLY_DELAY_MS = 250  # Wait for the slider to settle before regenerating audio.
+_WORD_TICK_MS = 30  # How often the spoken word is looked up while reading.
+_TIME_REFRESH_SECONDS = 0.5  # How often the listening times are refreshed while reading.
+
+_DOCUMENT_SUFFIXES = sorted(set(PAGED_FORMATS) | TEXT_SUFFIXES)
+_OPEN_FILTER = ";;".join(
+    [
+        "All documents (" + " ".join(f"*{s}" for s in _DOCUMENT_SUFFIXES) + ")",
+        "PDF documents (*.pdf)",
+        "E-books (*.epub *.mobi *.fb2 *.cbz)",
+        "Word documents (*.docx)",
+        "Web pages (*.html *.htm *.xhtml)",
+        "Text files (*.txt *.md *.markdown)",
+        "All files (*)",
+    ]
+)
 
 _STATE_LABELS = {
     ReadingState.IDLE: "Voice model not loaded",
@@ -61,8 +87,22 @@ _STATE_LABELS = {
 }
 
 
+class _MediaSignals(QObject):
+    """Carries media buttons (pressed on a Windows thread) to the UI thread."""
+
+    command = Signal(object)  # MediaCommand
+
+
 class MainWindow(QMainWindow):
-    """Top-level window. Talks only to :class:`ReadingSession` (via :class:`SessionBridge`)."""
+    """Top-level window. Talks only to :class:`ReadingSession` (via :class:`SessionBridge`).
+
+    Args:
+        session: The reading session.
+        bridge: Delivers the session's events as Qt signals.
+        settings: Settings to show and update (saved on close).
+        settings_path: Where settings are saved.
+        media_controls: Connect to the Windows media panel and media keys (off in tests).
+    """
 
     def __init__(
         self,
@@ -70,6 +110,8 @@ class MainWindow(QMainWindow):
         bridge: SessionBridge,
         settings: Settings,
         settings_path: Path,
+        *,
+        media_controls: bool = False,
     ) -> None:
         super().__init__()
         self._session = session
@@ -80,6 +122,9 @@ class MainWindow(QMainWindow):
         self._model_loading = False
         self._doc_loading_name: str | None = None
         self._shut_down = False
+        self._export_dialog: QProgressDialog | None = None
+        self._export_started = 0.0
+        self._times_refreshed = 0.0
 
         self.setWindowTitle(APP_NAME)
         self.setAcceptDrops(True)
@@ -117,15 +162,29 @@ class MainWindow(QMainWindow):
         self._speed_timer.setSingleShot(True)
         self._speed_timer.setInterval(_SPEED_APPLY_DELAY_MS)
         self._speed_timer.timeout.connect(self._apply_speed)
+        self._word_timer = QTimer(self)
+        self._word_timer.setInterval(_WORD_TICK_MS)
+        self._word_timer.timeout.connect(self._on_tick)
 
+        self._media_signals = _MediaSignals(self)
+        self._media_signals.command.connect(self._on_media_command)
+        self._media = MediaControls(self._media_signals.command.emit) if media_controls else None
+
+        self._view.set_font_family(DYSLEXIC_FONT if settings.dyslexic_font else "Segoe UI")
+        self._page_view.set_page_tint(SEPIA_PAGE_TINT if settings.theme == "sepia" else None)
         self._update_controls()
 
     # ------------------------------------------------------------- start-up
 
-    def start(self, initial_file: Path | None = None) -> None:
-        """Begin loading the model (downloading it first if needed), then open a file."""
-        if initial_file is not None:
-            self.open_file(initial_file)
+    def start(self, initial: Path | str | None = None) -> None:
+        """Begin loading the model (downloading it first if needed), then open a document.
+
+        ``initial`` is a file or a web address (from the command line).
+        """
+        if isinstance(initial, Path):
+            self.open_file(initial)
+        elif initial:
+            self._open_location(initial)
         self._ensure_model()
 
     def _ensure_model(self) -> None:
@@ -151,10 +210,20 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------- set-up
 
     def _create_actions(self) -> None:
-        self._open_action = QAction(make_icon(Glyph.OPEN, self), "&Open PDF...", self)
+        self._open_action = QAction(make_icon(Glyph.OPEN, self), "&Open...", self)
         self._open_action.setShortcut(QKeySequence.StandardKey.Open)
-        self._open_action.setToolTip("Open a PDF (Ctrl+O)")
+        self._open_action.setToolTip("Open a PDF, e-book, Word document, or web page (Ctrl+O)")
         self._open_action.triggered.connect(self._choose_file)
+
+        self._open_link_action = QAction(make_icon(Glyph.LINK, self), "Open &Link...", self)
+        self._open_link_action.setShortcut(QKeySequence("Ctrl+L"))
+        self._open_link_action.setToolTip("Listen to a web page or an online PDF (Ctrl+L)")
+        self._open_link_action.triggered.connect(self._ask_for_link)
+
+        self._export_action = QAction(make_icon(Glyph.SAVE, self), "&Export Audio...", self)
+        self._export_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self._export_action.setToolTip("Save the document as an MP3 to listen anywhere")
+        self._export_action.triggered.connect(self._export_audio)
 
         self._new_text_action = QAction(
             make_icon(Glyph.NEW_TEXT, self), "&New Text Document...", self
@@ -166,9 +235,7 @@ class MainWindow(QMainWindow):
         self._paste_action = QAction(make_icon(Glyph.PASTE, self), "&Paste Text...", self)
         self._paste_action.setShortcut(QKeySequence.StandardKey.Paste)
         self._paste_action.setToolTip("Read the text on the clipboard (Ctrl+V)")
-        self._paste_action.triggered.connect(
-            lambda: self._ask_for_text(QGuiApplication.clipboard().text())
-        )
+        self._paste_action.triggered.connect(self._paste)
 
         self._edit_text_action = QAction(make_icon(Glyph.EDIT, self), "&Edit Text...", self)
         self._edit_text_action.setShortcut(QKeySequence("Ctrl+E"))
@@ -239,6 +306,7 @@ class MainWindow(QMainWindow):
         file_menu = bar.addMenu("&File")
         file_menu.addAction(self._home_action)
         file_menu.addAction(self._open_action)
+        file_menu.addAction(self._open_link_action)
         self._recent_menu = file_menu.addMenu("Open &Recent")
         self._recent_menu.setToolTipsVisible(True)
         self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
@@ -246,6 +314,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self._new_text_action)
         file_menu.addAction(self._paste_action)
         file_menu.addAction(self._edit_text_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self._export_action)
         file_menu.addSeparator()
         file_menu.addAction(self._exit_action)
 
@@ -272,6 +342,25 @@ class MainWindow(QMainWindow):
         zoom_out.setShortcuts([QKeySequence("Ctrl+-"), QKeySequence.StandardKey.ZoomOut])
         reset = view_menu.addAction("&Actual Size", self._zoom_reset)
         reset.setShortcut(QKeySequence("Ctrl+0"))
+        view_menu.addSeparator()
+        theme_menu = view_menu.addMenu("&Theme")
+        self._theme_group = QActionGroup(self)
+        self._theme_group.setExclusive(True)
+        for name, label in THEME_LABELS.items():
+            action = theme_menu.addAction(label)
+            action.setCheckable(True)
+            action.setData(name)
+            action.setChecked(name == self._settings.theme)
+            self._theme_group.addAction(action)
+        self._theme_group.triggered.connect(self._on_theme_chosen)
+        self._dyslexic_action = view_menu.addAction("&Dyslexia-Friendly Font")
+        self._dyslexic_action.setCheckable(True)
+        self._dyslexic_action.setChecked(self._settings.dyslexic_font)
+        self._dyslexic_action.toggled.connect(self._on_dyslexic_font)
+        self._word_highlight_action = view_menu.addAction("Highlight Each &Word as It's Read")
+        self._word_highlight_action.setCheckable(True)
+        self._word_highlight_action.setChecked(self._settings.word_highlight)
+        self._word_highlight_action.toggled.connect(self._on_word_highlight)
 
         self._page_images_action = QAction("Show PDFs as &Page Images", self)
         self._page_images_action.setCheckable(True)
@@ -323,6 +412,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addAction(self._home_action)
         toolbar.addAction(self._open_action)
+        toolbar.addAction(self._open_link_action)
         toolbar.addAction(self._new_text_action)
         toolbar.addAction(self._paste_action)
         toolbar.addWidget(_spacer())
@@ -350,6 +440,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(title_box)
 
         toolbar.addWidget(_spacer())
+        toolbar.addAction(self._export_action)
         toolbar.addAction(self._add_bookmark_action)
         toolbar.addAction(self._show_bookmarks_action)
 
@@ -413,13 +504,16 @@ class MainWindow(QMainWindow):
         self._page_view.copy_requested.connect(self._copy)
         self._player.seek_requested.connect(lambda index: self._session.seek(index, play=False))
         self._home.open_requested.connect(self._choose_file)
-        self._home.open_path_requested.connect(lambda path: self.open_file(Path(path)))
+        self._home.open_path_requested.connect(self._open_location)
         self._home.listen_text_requested.connect(self.open_text)
         self._home.remove_requested.connect(self._forget_document)
         self._page_view.copy_all_requested.connect(self._copy_all)
         self._page_view.zoom_changed.connect(self._on_zoom_changed)
         self._view.zoom_changed.connect(self._on_zoom_changed)
         b.bookmarks_changed.connect(self._on_bookmarks_changed)
+        b.export_progress.connect(self._on_export_progress)
+        b.export_finished.connect(self._on_export_finished)
+        b.export_failed.connect(self._on_export_failed)
         self._banner.start_over.connect(lambda: self._session.seek(0, play=False))
         panel = self._bookmarks_panel
         panel.add_requested.connect(self._add_bookmark)
@@ -435,11 +529,48 @@ class MainWindow(QMainWindow):
     @Slot()
     def _choose_file(self) -> None:
         folder = self._settings.last_folder or str(Path.home() / "Documents")
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open PDF", folder, "PDF documents (*.pdf);;All files (*)"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Open", folder, _OPEN_FILTER)
         if path:
             self.open_file(Path(path))
+
+    def open_url(self, address: str) -> None:
+        """Open a web page or online document in the background."""
+        log.info("Opening link %s", address)
+        self._doc_loading_name = "link"
+        self._session.open_url(address)
+        self._update_controls()
+
+    @Slot(str)
+    def _open_location(self, location: str) -> None:
+        """Open a recent document, which is a file path or a web address."""
+        if is_web_address(location):
+            self.open_url(location)
+        else:
+            self.open_file(Path(location))
+
+    @Slot()
+    def _ask_for_link(self) -> None:
+        clipboard = QGuiApplication.clipboard().text().strip()
+        address, accepted = QInputDialog.getText(
+            self,
+            "Open Link",
+            "Paste the address of a web page, or of a PDF or e-book online:",
+            text=clipboard if is_web_address(clipboard) else "",
+        )
+        if accepted and address.strip():
+            if is_web_address(address) or "." in address:
+                self.open_url(address.strip())
+            else:
+                QMessageBox.warning(self, "Open Link", "That doesn't look like a web address.")
+
+    @Slot()
+    def _paste(self) -> None:
+        """Read the clipboard: a copied link opens the page, other text opens the editor."""
+        text = QGuiApplication.clipboard().text()
+        if is_web_address(text):
+            self.open_url(text.strip())
+        else:
+            self._ask_for_text(text)
 
     def open_file(self, path: Path) -> None:
         """Open ``path`` in the background."""
@@ -450,7 +581,10 @@ class MainWindow(QMainWindow):
         self._update_controls()
 
     def open_text(self, text: str) -> None:
-        """Read ``text`` as a document, in the background."""
+        """Read ``text`` as a document (or open it, if it is a web link), in the background."""
+        if is_web_address(text):
+            self.open_url(text.strip())
+            return
         log.info("Opening pasted text (%d characters)", len(text))
         self._doc_loading_name = "text"
         self._session.open_text(text)
@@ -471,20 +605,26 @@ class MainWindow(QMainWindow):
             self._ask_for_text(self._document.text, title="Edit Text")
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        """Accept drags that contain a PDF file or plain text."""
+        """Accept drags that contain a document, a link, or plain text."""
         mime = event.mimeData()
-        if _first_pdf(mime.urls()) is not None or (mime.hasText() and not mime.hasUrls()):
+        if _first_document(mime.urls()) is not None or (mime.hasText() and not mime.hasUrls()):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        """Open the first dropped PDF, or offer dropped text for reading."""
+        """Open the first dropped document or link, or offer dropped text for reading."""
         mime = event.mimeData()
-        path = _first_pdf(mime.urls())
-        if path is not None:
+        target = _first_document(mime.urls())
+        if isinstance(target, Path):
             event.acceptProposedAction()
-            self.open_file(path)
+            self.open_file(target)
+        elif isinstance(target, str):
+            event.acceptProposedAction()
+            self.open_url(target)
+        elif mime.hasText() and is_web_address(mime.text()):
+            event.acceptProposedAction()
+            self.open_url(mime.text().strip())
         elif mime.hasText() and not mime.hasUrls():
             event.acceptProposedAction()
             # Show the dialog after the drop completes, not inside the drag handler.
@@ -497,7 +637,14 @@ class MainWindow(QMainWindow):
     def _on_state_changed(self, state: ReadingState) -> None:
         if state is ReadingState.PLAYING:
             self._banner.hide()  # Reading on means the user accepted where it resumed.
+            self._word_timer.start()
+        else:
+            self._word_timer.stop()
+            if state is not ReadingState.PAUSED:
+                self._clear_word_highlight()
+        self._update_media_status(state)
         self._update_controls()
+        self._update_times()
 
     @Slot(list, str)
     def _on_model_loaded(self, voices: list[Voice], voice_id: str) -> None:
@@ -547,6 +694,11 @@ class MainWindow(QMainWindow):
         self._player.set_document_length(document.sentence_count)
         self._view.highlight(self._session.position)
         self._update_controls()
+        self._update_times()
+        if self._media is not None:
+            cover = self._cover_for(document.doc_id) if document.doc_id else None
+            self._media.set_track(document.title, APP_NAME, cover)
+            self._update_media_status(self._session.state)
 
     @Slot(int)
     def _on_resumed(self, index: int) -> None:
@@ -593,6 +745,11 @@ class MainWindow(QMainWindow):
         for record in records:
             if record.path is None:
                 continue
+            if is_web_address(record.path):
+                link = menu.addAction(record.title)
+                link.setToolTip(record.path)
+                link.triggered.connect(lambda _checked=False, u=record.path: self.open_url(u))
+                continue
             path = Path(record.path)
             action = menu.addAction(path.name)
             action.setToolTip(str(path))
@@ -604,18 +761,219 @@ class MainWindow(QMainWindow):
 
     @Slot(object, str)
     def _on_document_error(self, path: Path | None, message: str) -> None:
+        was_link = self._doc_loading_name == "link"
         self._doc_loading_name = None
         self._update_controls()
-        if path is None:
-            QMessageBox.warning(self, "Can't read this text", message)
+        if path is not None:
+            QMessageBox.warning(self, "Can't open this file", f"{path.name}\n\n{message}")
+        elif was_link:
+            QMessageBox.warning(self, "Can't open this link", message)
         else:
-            QMessageBox.warning(self, "Can't open this PDF", f"{path.name}\n\n{message}")
+            QMessageBox.warning(self, "Can't read this text", message)
 
     @Slot(int)
     def _on_position_changed(self, index: int) -> None:
         self._view.highlight(index)
         self._page_view.highlight(index)
         self._update_position_labels()
+        self._update_times()
+
+    # ------------------------------------------------- spoken word and time
+
+    @Slot()
+    def _on_tick(self) -> None:
+        """Follow the spoken word, and refresh the listening times now and then."""
+        if self._word_highlight_action.isChecked():
+            word = self._session.current_word()
+            if word is not None:
+                self._view.highlight_word(*word)
+                self._page_view.highlight_word(*word)
+        if time.monotonic() - self._times_refreshed >= _TIME_REFRESH_SECONDS:
+            self._update_times()
+
+    def _clear_word_highlight(self) -> None:
+        position = self._session.position
+        self._view.highlight_word(position, -1)
+        self._page_view.highlight_word(position, -1)
+
+    def _update_times(self) -> None:
+        self._times_refreshed = time.monotonic()
+        if self._document is None:
+            self._player.set_times(0.0, 0.0)
+            return
+        self._player.set_times(*self._session.listening_time())
+
+    @Slot(bool)
+    def _on_word_highlight(self, on: bool) -> None:
+        self._settings.word_highlight = on
+        if not on:
+            self._clear_word_highlight()
+
+    # ------------------------------------------------------ reading comfort
+
+    @Slot(QAction)
+    def _on_theme_chosen(self, action: QAction) -> None:
+        theme = action.data()
+        if not isinstance(theme, str) or theme == self._settings.theme:
+            return
+        self._settings.theme = theme
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            apply_theme(app, theme)
+        self._page_view.set_page_tint(SEPIA_PAGE_TINT if theme == "sepia" else None)
+        # Colours fixed when things were drawn: refresh them for the new theme.
+        self._view.refresh_colors()
+        self._home.refresh_style()
+        self._refresh_icons()
+
+    def _refresh_icons(self) -> None:
+        for action, glyph in self._glyph_actions():
+            action.setIcon(make_icon(glyph, self))
+        self._play_icon = make_icon(Glyph.PLAY, self)
+        self._pause_icon = make_icon(Glyph.PAUSE, self)
+        self._preview_button.setIcon(make_icon(Glyph.VOLUME, self))
+        self._update_controls()
+
+    def _glyph_actions(self) -> list[tuple[QAction, Glyph]]:
+        return [
+            (self._open_action, Glyph.OPEN),
+            (self._open_link_action, Glyph.LINK),
+            (self._export_action, Glyph.SAVE),
+            (self._new_text_action, Glyph.NEW_TEXT),
+            (self._paste_action, Glyph.PASTE),
+            (self._edit_text_action, Glyph.EDIT),
+            (self._stop_action, Glyph.STOP),
+            (self._prev_action, Glyph.PREVIOUS),
+            (self._next_action, Glyph.NEXT),
+            (self._add_bookmark_action, Glyph.BOOKMARK),
+            (self._show_bookmarks_action, Glyph.BOOKMARKS),
+            (self._home_action, Glyph.HOME),
+        ]
+
+    @Slot(bool)
+    def _on_dyslexic_font(self, on: bool) -> None:
+        self._settings.dyslexic_font = on
+        self._view.set_font_family(DYSLEXIC_FONT if on else "Segoe UI")
+        if on and self._views.currentWidget() is self._page_view:
+            self._notify(
+                "The dyslexia-friendly font is used in the text view "
+                "(Settings > Show PDFs as Page Images: off)",
+                4000,
+            )
+
+    # ------------------------------------------------------------- export
+
+    @Slot()
+    def _export_audio(self) -> None:
+        document = self._document
+        if document is None:
+            return
+        if self._session.is_exporting:
+            self._notify("Audio is already being saved")
+            return
+        folder = self._settings.last_folder or str(Path.home() / "Documents")
+        name = _safe_file_name(document.title) + ".mp3"
+        chosen, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Audio",
+            str(Path(folder) / name),
+            "MP3 audio (*.mp3);;WAV audio (*.wav)",
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        if path.suffix.lower() not in EXPORT_SUFFIXES:
+            path = path.with_name(path.name + ".mp3")
+        if not self._session.start_export(path):
+            self._notify("Audio can be saved once the voice model is ready")
+            return
+        dialog = QProgressDialog("Saving audio\u2026", "Cancel", 0, document.sentence_count, self)
+        dialog.setWindowTitle("Export Audio")
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(self._session.cancel_export)
+        dialog.show()
+        self._export_dialog = dialog
+        self._export_started = time.monotonic()
+        self._update_controls()
+
+    @Slot(int, int)
+    def _on_export_progress(self, done: int, total: int) -> None:
+        dialog = self._export_dialog
+        if dialog is None:
+            return
+        dialog.setMaximum(total)
+        dialog.setValue(done)
+        elapsed = time.monotonic() - self._export_started
+        if done >= 3 and elapsed > 2:
+            left = elapsed / done * (total - done)
+            minutes = max(1, round(left / 60))
+            dialog.setLabelText(
+                f"Saving audio\u2026 {done:,} of {total:,} sentences (about {minutes} min left)"
+            )
+        else:
+            dialog.setLabelText(f"Saving audio\u2026 {done:,} of {total:,} sentences")
+
+    def _close_export_dialog(self) -> None:
+        if self._export_dialog is not None:
+            self._export_dialog.canceled.disconnect()
+            self._export_dialog.close()
+            self._export_dialog.deleteLater()
+            self._export_dialog = None
+        self._update_controls()
+
+    @Slot(object)
+    def _on_export_finished(self, path: Path) -> None:
+        self._close_export_dialog()
+        box = QMessageBox(self)
+        box.setWindowTitle("Audio saved")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"Saved {path.name}")
+        box.setInformativeText(str(path.parent))
+        show = box.addButton("Show in Folder", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is show:
+            subprocess.Popen(["explorer", f"/select,{path}"])
+
+    @Slot(str, bool)
+    def _on_export_failed(self, message: str, cancelled: bool) -> None:
+        self._close_export_dialog()
+        if cancelled:
+            self._notify("Export cancelled")
+        else:
+            QMessageBox.warning(self, "Couldn't save the audio", message)
+
+    # -------------------------------------------------------------- media
+
+    @Slot(object)
+    def _on_media_command(self, command: MediaCommand) -> None:
+        """Handle media keys, headset buttons, and the Windows media panel."""
+        if command is MediaCommand.PLAY:
+            self._session.play()
+        elif command is MediaCommand.PAUSE:
+            self._session.pause()
+        elif command is MediaCommand.STOP:
+            self._session.stop()
+        elif command is MediaCommand.NEXT:
+            self._session.next_sentence()
+        elif command is MediaCommand.PREVIOUS:
+            self._session.previous_sentence()
+
+    def _update_media_status(self, state: ReadingState) -> None:
+        if self._media is None:
+            return
+        if self._document is None:
+            status = PlaybackStatus.CLOSED
+        elif state is ReadingState.PLAYING:
+            status = PlaybackStatus.PLAYING
+        elif state is ReadingState.PAUSED:
+            status = PlaybackStatus.PAUSED
+        else:
+            status = PlaybackStatus.STOPPED
+        self._media.set_status(status)
 
     @Slot(bool)
     def _show_page_images(self, show: bool) -> None:
@@ -740,6 +1098,7 @@ class MainWindow(QMainWindow):
         speed = self._speed_slider.value() / 100
         self._settings.speed = speed
         self._session.set_speed(speed)
+        self._update_times()
 
     @Slot(int)
     def _on_voice_chosen(self, index: int) -> None:
@@ -775,6 +1134,12 @@ class MainWindow(QMainWindow):
             and self._document.text is not None
             and state is not ReadingState.LOADING
         )
+        self._export_action.setEnabled(
+            model_ready
+            and has_doc
+            and state is not ReadingState.LOADING
+            and not self._session.is_exporting
+        )
         self._prev_action.setEnabled(has_doc and state is not ReadingState.LOADING)
         self._next_action.setEnabled(has_doc and state is not ReadingState.LOADING)
         self._voice_combo.setEnabled(model_ready)
@@ -788,6 +1153,8 @@ class MainWindow(QMainWindow):
                 label = self._ocr_progress
             elif self._doc_loading_name == "text":
                 label = "Preparing text..."
+            elif self._doc_loading_name == "link":
+                label = "Opening link..."
             elif self._doc_loading_name:
                 label = f"Opening {self._doc_loading_name}..."
             else:
@@ -795,7 +1162,7 @@ class MainWindow(QMainWindow):
         elif state is ReadingState.IDLE and not model_ready:
             label = "Voice model not installed. Use Help > Download Voice Model."
         elif state is ReadingState.READY and not has_doc:
-            label = "Ready. Open a PDF to start."
+            label = "Ready. Open a document to start."
         else:
             label = _STATE_LABELS[state]
         self._state_label.setText(label)
@@ -822,10 +1189,11 @@ class MainWindow(QMainWindow):
             self,
             f"About {APP_NAME}",
             f"<h3>{APP_NAME} {APP_VERSION}</h3>"
-            "<p>Reads PDF documents aloud with natural AI voices, entirely on your "
-            "computer.</p>"
+            "<p>Reads PDFs, e-books, Word documents, and web pages aloud with natural AI "
+            "voices, on your own computer.</p>"
             "<p>Voices: Kokoro-82M (Apache-2.0) via kokoro-onnx (MIT).<br>"
-            "PDF: PyMuPDF (AGPL-3.0). UI: Qt / PySide6 (LGPL-3.0).</p>"
+            "PDF: PyMuPDF (AGPL-3.0). UI: Qt / PySide6 (LGPL-3.0).<br>"
+            "MP3: LAME via lameenc (LGPL). Font: OpenDyslexic (SIL OFL 1.1).</p>"
             "<p>Licensed under the GNU AGPL v3.0 or later.</p>" + link,
         )
 
@@ -854,19 +1222,31 @@ class MainWindow(QMainWindow):
             self._settings.page_zoom = self._page_view.zoom
             self._settings.text_zoom = self._view.zoom
             self._settings.speed = self._speed_slider.value() / 100
+            self._word_timer.stop()
             save_settings(self._settings, self._settings_path)
             self._session.shutdown()
             self._page_view.clear_document()
+            if self._media is not None:
+                self._media.close()
         super().closeEvent(event)
 
 
-def _first_pdf(urls: list[QUrl]) -> Path | None:
+def _first_document(urls: list[QUrl]) -> Path | str | None:
+    """Return the first dropped document file (a Path) or web link (a str)."""
     for url in urls:
         if url.isLocalFile():
             path = Path(url.toLocalFile())
-            if path.suffix.lower() == ".pdf":
+            if path.suffix.lower() in _DOCUMENT_SUFFIXES:
                 return path
+        elif url.scheme() in ("http", "https"):
+            return url.toString()
     return None
+
+
+def _safe_file_name(title: str) -> str:
+    """Make a file name from a document title."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", title).strip(" .")
+    return " ".join(name.split())[:80] or "Audio"
 
 
 def _spacer() -> QWidget:

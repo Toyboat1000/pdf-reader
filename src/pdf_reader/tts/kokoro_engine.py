@@ -11,6 +11,7 @@ from pdf_reader.config.settings import clamp_speed
 from pdf_reader.tts.base import (
     AudioArray,
     ModelLoadError,
+    Speech,
     SynthesisCancelledError,
     SynthesisError,
     TtsEngine,
@@ -19,6 +20,8 @@ from pdf_reader.tts.base import (
 from pdf_reader.tts.download import ProgressCallback, RemoteFile, download_files, is_present
 from pdf_reader.tts.kokoro_voices import english_voices
 from pdf_reader.tts.speech_text import speech_text
+from pdf_reader.tts.stretch import time_stretch
+from pdf_reader.tts.word_timing import SpokenWord, align_word_starts, estimate_word_starts
 
 if TYPE_CHECKING:
     import onnxruntime
@@ -48,6 +51,9 @@ KOKORO_FILES: tuple[RemoteFile, ...] = (KOKORO_MODEL, KOKORO_VOICES)
 """Everything the Kokoro engine needs, for the first-run download."""
 
 SAMPLE_RATE = 24_000
+
+KOKORO_MAX_SPEED = 2.0
+"""Fastest speed the model produces itself; faster speeds are time-stretched."""
 
 
 class KokoroEngine(TtsEngine):
@@ -131,26 +137,49 @@ class KokoroEngine(TtsEngine):
 
     def synthesize(self, text: str, voice_id: str, speed: float) -> AudioArray:
         """Generate speech for one sentence or sentence fragment."""
+        return self.synthesize_timed(text, voice_id, speed).samples
+
+    def synthesize_timed(self, text: str, voice_id: str, speed: float) -> Speech:
+        """Generate speech and find when each word starts, from the model's timings.
+
+        Speeds above :data:`KOKORO_MAX_SPEED` are made by the model at that speed and
+        then time-stretched (same pitch) the rest of the way.
+        """
         kokoro = self._kokoro
         if kokoro is None:
             raise SynthesisError("The voice model is not loaded.")
         voice = next((v for v in self._voices if v.id == voice_id), None)
         if voice is None:
             raise SynthesisError(f"Unknown voice {voice_id!r}.")
+        speed = clamp_speed(speed)
+        model_speed = min(speed, KOKORO_MAX_SPEED)
         try:
-            audio, _ = kokoro.create(
-                speech_text(text), voice=voice_id, speed=clamp_speed(speed), lang=voice.language
+            audio, _, timings = kokoro.create_timed(
+                speech_text(text), voice=voice_id, speed=model_speed, lang=voice.language
             )
         except SynthesisCancelledError:
             raise
         except ValueError as exc:
             # kokoro-onnx raises ValueError when text yields no pronounceable phonemes.
             log.warning("Nothing to synthesize for %r: %s", text, exc)
-            return np.zeros(0, dtype=np.float32)
+            return Speech(np.zeros(0, dtype=np.float32), tuple(0.0 for _ in text.split()))
         except Exception as exc:
             log.exception("Synthesis failed for %r", text)
             raise SynthesisError(str(exc)) from exc
-        return polish(np.asarray(audio, dtype=np.float32).ravel(), SAMPLE_RATE)
+        audio, trimmed = polish_timed(np.asarray(audio, dtype=np.float32).ravel(), SAMPLE_RATE)
+        spoken = [
+            SpokenWord(w.length, max(0.0, w.start - trimmed), max(0.0, w.end - trimmed))
+            for w in spoken_words(timings)
+        ]
+        if spoken:
+            starts = align_word_starts(text, spoken)
+        else:
+            starts = estimate_word_starts(text, audio.size / SAMPLE_RATE)
+        if speed > model_speed and audio.size:
+            stretched = _fade_edges(time_stretch(audio, speed / model_speed, SAMPLE_RATE))
+            ratio = stretched.size / audio.size
+            audio, starts = stretched, tuple(s * ratio for s in starts)
+        return Speech(audio, starts)
 
     def cancel(self) -> None:
         """Abort synthesis in progress (ONNX Runtime stops between graph nodes)."""
@@ -211,12 +240,17 @@ def polish(audio: AudioArray, sample_rate: int) -> AudioArray:
     suit the text instead), evens out loudness from sentence to sentence, and fades
     the very edges by a few milliseconds so joins never click.
     """
+    return polish_timed(audio, sample_rate)[0]
+
+
+def polish_timed(audio: AudioArray, sample_rate: int) -> tuple[AudioArray, float]:
+    """Like :func:`polish`, also returning how many seconds were trimmed from the start."""
     if audio.size == 0:
-        return audio
+        return audio, 0.0
     level = np.abs(audio)
     peak = float(level.max())
     if peak <= 0:
-        return np.zeros(0, dtype=np.float32)
+        return np.zeros(0, dtype=np.float32), 0.0
     loud = np.nonzero(level > peak * 10 ** (_QUIET_DB / 20))[0]
     start = max(0, int(loud[0]) - int(0.008 * sample_rate))
     end = min(audio.size, int(loud[-1]) + int(0.020 * sample_rate))
@@ -227,6 +261,11 @@ def polish(audio: AudioArray, sample_rate: int) -> AudioArray:
         gain = min(max(_TARGET_RMS / rms, 0.6), 1.8)
         gain = min(gain, 0.97 / peak)  # Never clip.
         audio *= gain
+    return _fade_edges(audio, sample_rate), start / sample_rate
+
+
+def _fade_edges(audio: AudioArray, sample_rate: int = SAMPLE_RATE) -> AudioArray:
+    """Fade the first and last few milliseconds in place, so joins never click."""
     fade_in = min(int(_FADE_IN_S * sample_rate), audio.size)
     fade_out = min(int(_FADE_OUT_S * sample_rate), audio.size)
     if fade_in:
@@ -234,6 +273,38 @@ def polish(audio: AudioArray, sample_rate: int) -> AudioArray:
     if fade_out:
         audio[-fade_out:] *= np.linspace(1.0, 0.0, fade_out, dtype=np.float32)
     return audio
+
+
+_PHONEME_MARKS = frozenset('\u02c8\u02cc\u02d0.,!?;:\u2014\u2026"()\u00ab\u00bb\u201c\u201d- ')
+"""Stress and length marks and punctuation: not sounds of a word."""
+
+
+def spoken_words(timings: list[Any]) -> list[SpokenWord]:
+    """Group kokoro-onnx phoneme timings into words.
+
+    A word ends at a space, and also where the timings jump (the model works on
+    long texts in several passes, and the spaces between passes are dropped).
+    """
+    words: list[SpokenWord] = []
+    length, start, end = 0, 0.0, 0.0
+    previous_end: float | None = None
+    for timing in timings:
+        boundary = timing.phoneme == " " or (
+            previous_end is not None and abs(timing.start - previous_end) > 1e-4
+        )
+        if boundary and length:
+            words.append(SpokenWord(length, start, end))
+            length = 0
+        previous_end = timing.end
+        if timing.phoneme in _PHONEME_MARKS:
+            continue
+        if not length:
+            start = timing.start
+        length += 1
+        end = timing.end
+    if length:
+        words.append(SpokenWord(length, start, end))
+    return words
 
 
 def _route_library_logging() -> None:

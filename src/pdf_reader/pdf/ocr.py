@@ -17,6 +17,7 @@ from typing import Any
 
 import pymupdf
 
+from pdf_reader.pdf.formats import open_paged
 from pdf_reader.pdf.models import BBox, OcrWord, TextBlock, TextLine
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ def recognize_pages(
     page_numbers: list[int],
     progress: Callable[[int, int], None] | None = None,
     workers: int | None = None,
+    filetype: str = "pdf",
 ) -> dict[int, list[RawLine]]:
     """Recognize several pages in parallel.
 
@@ -74,6 +76,7 @@ def recognize_pages(
         page_numbers: 1-based pages to recognize.
         progress: Called with ``(pages_done, pages_total)`` as pages finish.
         workers: Thread count; defaults to the number of CPUs (at most 6).
+        filetype: The document's PyMuPDF file type (see :mod:`pdf_reader.pdf.formats`).
 
     Returns:
         The recognized lines of each page. Pages that fail are returned empty.
@@ -84,7 +87,7 @@ def recognize_pages(
     results: dict[int, list[RawLine]] = {}
     done = 0
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="ocr") as pool:
-        futures = {pool.submit(_recognize_one, pdf_bytes, n): n for n in page_numbers}
+        futures = {pool.submit(_recognize_one, pdf_bytes, n, filetype): n for n in page_numbers}
         for future in as_completed(futures):
             number = futures[future]
             try:
@@ -98,14 +101,14 @@ def recognize_pages(
     return results
 
 
-def _recognize_one(pdf_bytes: bytes, page_number: int) -> list[RawLine]:
+def _recognize_one(pdf_bytes: bytes, page_number: int, filetype: str = "pdf") -> list[RawLine]:
     """Render and recognize one page with this thread's document and engine."""
     from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
     from winrt.windows.media.ocr import OcrEngine
     from winrt.windows.storage.streams import DataWriter
 
     if getattr(_local, "pdf", None) is None:
-        _local.pdf = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+        _local.pdf = open_paged(data=pdf_bytes, filetype=filetype)
         _local.engine = OcrEngine.try_create_from_user_profile_languages()
     page = _local.pdf[page_number - 1]
     zoom = OCR_DPI / 72

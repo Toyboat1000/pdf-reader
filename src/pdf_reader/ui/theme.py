@@ -2,14 +2,56 @@
 
 Inspired by Apple's design principles (restraint, hierarchy through weight and size,
 depth for floating controls, instant feedback), applied with native Windows type.
-Colours come from the palette, so light and dark mode both work; hairlines and
-hover tints use neutral translucent greys that read well on either.
+Colours come from the palette, so every theme works; hairlines and hover tints use
+neutral translucent greys that read well on any of them.
+
+Themes: the system's choice, light, sepia (warm paper, easy on the eyes), and dark.
 """
 
-from PySide6.QtGui import QFont, QFontDatabase
+import logging
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication
 
+log = logging.getLogger(__name__)
+
 _UI_FONTS = ("Segoe UI Variable Text", "Segoe UI")
+_FONT_DIR = Path(__file__).parent / "fonts"
+
+DYSLEXIC_FONT = "OpenDyslexic"
+"""Family name of the bundled dyslexia-friendly font (SIL Open Font License)."""
+
+THEME_LABELS = {"system": "&System", "light": "&Light", "sepia": "S&epia", "dark": "&Dark"}
+"""Menu labels of the themes, in menu order."""
+
+SEPIA_PAGE_TINT = QColor(246, 236, 214)
+"""Multiplied over page images in the sepia theme: white paper turns warm, ink stays."""
+
+_SEPIA = {
+    QPalette.ColorRole.Window: "#f1e7d2",
+    QPalette.ColorRole.WindowText: "#4a3b2a",
+    QPalette.ColorRole.Base: "#faf3e3",
+    QPalette.ColorRole.AlternateBase: "#efe3cb",
+    QPalette.ColorRole.Text: "#4a3b2a",
+    QPalette.ColorRole.PlaceholderText: "#8c7a63",
+    QPalette.ColorRole.Button: "#ece0c6",
+    QPalette.ColorRole.ButtonText: "#4a3b2a",
+    QPalette.ColorRole.BrightText: "#ffffff",
+    QPalette.ColorRole.Highlight: "#a8692f",
+    QPalette.ColorRole.HighlightedText: "#ffffff",
+    QPalette.ColorRole.Accent: "#a8692f",
+    QPalette.ColorRole.Link: "#8f5524",
+    QPalette.ColorRole.LinkVisited: "#7a4a22",
+    QPalette.ColorRole.ToolTipBase: "#faf3e3",
+    QPalette.ColorRole.ToolTipText: "#4a3b2a",
+    QPalette.ColorRole.Light: "#fffaf0",
+    QPalette.ColorRole.Midlight: "#f3e9d6",
+    QPalette.ColorRole.Mid: "#cdbb9c",
+    QPalette.ColorRole.Dark: "#7d5a35",
+    QPalette.ColorRole.Shadow: "#5a4630",
+}
 
 STYLE_SHEET = """
 /* ------------------------------------------------------------ toolbar */
@@ -60,6 +102,7 @@ QToolButton#player-pill {
 QToolButton#player-pill:hover { background: rgba(128, 128, 128, 0.14); }
 QToolButton#player-pill::menu-indicator { image: none; width: 0px; }
 QLabel#player-meta { font-size: 8.5pt; color: palette(placeholder-text); }
+QLabel#player-time { font-size: 8.5pt; color: palette(placeholder-text); }
 
 /* ------------------------------------------------------- speed popover */
 QWidget#speed-panel { background: transparent; }
@@ -167,12 +210,44 @@ QStatusBar::item { border: none; }
 """
 
 
-def apply_theme(app: QApplication) -> None:
-    """Use the Windows UI font and the app style sheet."""
+def apply_theme(app: QApplication, theme: str = "system") -> None:
+    """Use the Windows UI font, the colours of ``theme``, and the app style sheet.
+
+    Can be called again at any time to switch themes.
+    """
     families = set(QFontDatabase.families())
     family = next((name for name in _UI_FONTS if name in families), None)
     if family is not None:
         font = QFont(family)
         font.setPointSizeF(9.5)
         app.setFont(font)
-    app.setStyleSheet(STYLE_SHEET)
+    hints = QGuiApplication.styleHints()
+    if theme == "dark":
+        hints.setColorScheme(Qt.ColorScheme.Dark)
+    elif theme in ("light", "sepia"):
+        hints.setColorScheme(Qt.ColorScheme.Light)
+    else:
+        hints.unsetColorScheme()
+    app.setPalette(sepia_palette() if theme == "sepia" else QPalette())
+    app.setStyleSheet(STYLE_SHEET)  # Re-polished so palette() colours update.
+
+
+def sepia_palette() -> QPalette:
+    """Return warm, low-contrast colours that look like paper."""
+    palette = QPalette()
+    for role, value in _SEPIA.items():
+        palette.setColor(role, QColor(value))
+    for role in (
+        QPalette.ColorRole.WindowText,
+        QPalette.ColorRole.Text,
+        QPalette.ColorRole.ButtonText,
+    ):
+        palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#a8977f"))
+    return palette
+
+
+def load_bundled_fonts() -> None:
+    """Make the bundled fonts (the dyslexia-friendly font) available to the app."""
+    for path in sorted(_FONT_DIR.glob("*.otf")):
+        if QFontDatabase.addApplicationFont(str(path)) < 0:
+            log.warning("Could not load the font %s", path.name)

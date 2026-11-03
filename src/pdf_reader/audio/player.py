@@ -32,6 +32,9 @@ log = logging.getLogger(__name__)
 PREVIEW_INDEX = -1
 """Chunk index used for voice previews, which are not part of the document."""
 
+_HISTORY = 512
+"""Recently written pieces of audio remembered for :meth:`AudioPlayer.playhead`."""
+
 _IDLE_SUSPEND_SECONDS = 5.0
 """After this long with nothing to play, the stream is stopped so it does not keep
 the audio device busy (and the PC awake). It restarts automatically when needed."""
@@ -46,11 +49,14 @@ class AudioChunk:
         epoch: Playback epoch the chunk was generated for; used to ignore events
             from chunks that belong to an earlier seek.
         samples: Mono float32 samples, including any trailing pause.
+        word_starts: Seconds into ``samples`` at which each word of the sentence
+            starts (see :class:`pdf_reader.tts.base.Speech`); may be empty.
     """
 
     index: int
     epoch: int
     samples: AudioArray = field(repr=False)
+    word_starts: tuple[float, ...] = field(default=(), repr=False)
 
 
 class PlayerListener(Protocol):
@@ -130,6 +136,8 @@ class AudioPlayer:
         self._silent_frames = 0
         self._idle_reported = False
         self._start_requested = False
+        # (when audible, chunk, first sample, sample count) for recent output buffers.
+        self._history: deque[tuple[float, AudioChunk, int, int]] = deque(maxlen=_HISTORY)
 
         self._stream_lock = threading.Lock()  # Guards stream creation, start, and stop.
         self._stream: OutputStream | None = None
@@ -181,12 +189,27 @@ class AudioPlayer:
             self._queue.clear()
             self._current = None
             self._offset = 0
+            self._history.clear()
 
     @property
     def current(self) -> AudioChunk | None:
         """Return the chunk being played, if any."""
         with self._lock:
             return self._current
+
+    def playhead(self) -> tuple[AudioChunk, float] | None:
+        """Return the chunk being heard right now and how many seconds into it.
+
+        Accounts for the output latency, so it matches what comes out of the
+        speakers. While paused it stays where the sound stopped.
+        """
+        now = time.monotonic()
+        with self._lock:
+            for audible_at, chunk, first, count in reversed(self._history):
+                if audible_at <= now:
+                    played = min((now - audible_at) * self._sample_rate, count)
+                    return chunk, (first + played) / self._sample_rate
+        return None
 
     def pause(self) -> None:
         """Pause output; the current position is kept."""
@@ -285,6 +308,7 @@ class AudioPlayer:
         if status is not None and getattr(status, "output_underflow", False):
             self._underflows += 1
         delay = self._output_delay(time_info)
+        now = time.monotonic()
         posted: list[tuple[_Event, AudioChunk | None, float]] = []
         with self._lock:
             pos = 0
@@ -299,6 +323,9 @@ class AudioPlayer:
                     samples = self._current.samples
                     count = min(frames - pos, len(samples) - self._offset)
                     out[pos : pos + count] = samples[self._offset : self._offset + count]
+                    self._history.append(
+                        (now + delay + pos / self._sample_rate, self._current, self._offset, count)
+                    )
                     pos += count
                     self._offset += count
                     if self._offset >= len(samples):
@@ -314,7 +341,6 @@ class AudioPlayer:
                     posted.append((_Event.IDLE, None, 0))
             else:
                 self._silent_frames = 0
-        now = time.monotonic()
         for kind, chunk, frame_pos in posted:
             self._events.put((kind, chunk, now + delay + frame_pos / self._sample_rate))
 

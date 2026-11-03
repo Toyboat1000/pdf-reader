@@ -1,24 +1,38 @@
 # PDF Reader
 
-**Listen to your PDFs and any text with natural-sounding AI voices, 100% offline and
-private.**
+**Listen to your PDFs, e-books, Word documents, web pages, and any text with
+natural-sounding AI voices, offline and private.**
 
-PDF Reader is a free, open-source Windows desktop app that reads PDF documents, or any
-text you paste into it, aloud.
+PDF Reader is a free, open-source Windows desktop app that reads documents aloud: PDFs
+(including scans), EPUB e-books, Word files, web pages, or any text you paste into it.
 It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-speech
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.7). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.8). See the [roadmap](ROADMAP.md) for what's next.
 
-![PDF Reader resuming a two-column document, with bookmarks and the current sentence highlighted](docs/screenshot.png)
+![PDF Reader reading a PDF page, with the spoken word highlighted inside the current sentence](docs/screenshot.png)
 
 ## Features
 
 - **Natural AI voices.** 28 English voices (American and British, female and male),
   with friendly names such as "Heart (US Female)" and a **Preview** button.
+- **Word-by-word highlighting.** The word being spoken glides along the highlighted
+  sentence, on page images and in the text view, timed by the voice model itself.
 - **Runs offline.** After a one-time download of the voice model (about 354 MB), the
-  app never needs the internet again.
+  app only uses the internet when you open a web link.
+- **Many formats.** PDF, EPUB (and MOBI, FB2, XPS, CBZ), Word (.docx), saved web
+  pages, Markdown, and text files. Paste or type a web address (Ctrl+L) to listen to
+  an article without the menus and ads, or to open an online PDF.
+- **Listening time.** The player shows time listened, time left, and how far you are
+  ("23% · 12 min left"), at the current speed.
+- **Reading comfort.** Light, sepia, and dark themes (View > Theme; sepia also warms
+  the pages), and a dyslexia-friendly font, OpenDyslexic (View > Dyslexia-Friendly
+  Font, in the text view).
+- **Export to MP3.** Save a whole document as an MP3 (or WAV) to listen on your phone
+  (File > Export Audio, Ctrl+Shift+S), with the document's title in the file.
+- **Media keys.** Play/pause and next/previous keys on keyboards and headsets work,
+  and the Windows media panel shows what's being read, with its cover.
 - **Smart text cleanup.** Page numbers, running headers and footers, and footnotes are
   skipped; two-column pages are read column by column; and sentences that continue
   across a column or page break are read as one sentence.
@@ -50,11 +64,11 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 - **Click to jump.** Click any sentence to start reading from there.
 - **Smooth playback.** Upcoming sentences are prepared in the background, so there are
   no gaps between them.
-- **Speed control.** 0.5x to 2.0x; changes apply from the next sentence without a
-  pause.
+- **Speed control.** 0.5x to 4.0x, with the voice's natural pitch kept at high
+  speeds; changes apply from the next sentence without a pause.
 - **Simple controls.** Play/Pause, Stop, Previous/Next sentence, and keyboard shortcuts.
-- **Open PDFs your way.** Use File > Open, the toolbar, or drag and drop a file (or
-  text) onto the window.
+- **Open documents your way.** Use File > Open, the toolbar, or drag and drop a file,
+  a link, or text onto the window.
 - **Remembers your preferences.** Voice, speed, window layout, and the last folder you
   opened.
 - **Friendly errors.** Password-protected, damaged, and blank PDFs are explained
@@ -68,9 +82,11 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 | Left arrow | Previous sentence |
 | Right arrow | Next sentence |
 | Ctrl+H | Home page |
-| Ctrl+O | Open a PDF |
+| Ctrl+O | Open a document |
+| Ctrl+L | Open a web link |
+| Ctrl+Shift+S | Export audio (MP3) |
 | Ctrl+N | New text document (type or paste text) |
-| Ctrl+V | Paste text from the clipboard and read it |
+| Ctrl+V | Paste text (or a link) from the clipboard and read it |
 | Ctrl+E | Edit the current text document |
 | Ctrl+B | Bookmark the current sentence |
 | Ctrl+Shift+B | Show or hide the Bookmarks panel |

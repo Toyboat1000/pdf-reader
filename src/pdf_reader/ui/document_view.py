@@ -1,6 +1,10 @@
-"""The scrolling text panel that shows the document and highlights the spoken sentence."""
+"""The scrolling text panel that shows the document and highlights the spoken sentence.
+
+The word being spoken is marked within the sentence, word by word.
+"""
 
 import bisect
+import re
 
 from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, Qt, Signal
 from PySide6.QtGui import (
@@ -20,10 +24,14 @@ from PySide6.QtWidgets import QTextEdit, QWidget
 from pdf_reader.core.document import ReadingDocument
 
 _MAX_TEXT_WIDTH = 820
+"""Widest reading column in pixels; wider windows get side margins."""
 
 _PLAYER_CLEARANCE = 130
 """Pixels kept free under the text for the floating player capsule."""
-"""Widest reading column in pixels; wider windows get side margins."""
+
+_WORD = re.compile(r"\S+")
+
+DEFAULT_FONT = "Segoe UI"
 
 _CLICK_TOLERANCE = 6
 """A press and release closer than this (pixels) counts as a click, not a drag."""
@@ -50,7 +58,8 @@ class DocumentView(QTextEdit):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
         self.setPlaceholderText("Open a PDF with Ctrl+O, or drag one onto this window.")
-        self.setFont(QFont("Segoe UI", 12))
+        self._family = DEFAULT_FONT
+        self.setFont(QFont(self._family, 12))
         # Fill the side margins (see resizeEvent) with the text background colour.
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Window, palette.color(QPalette.ColorRole.Base))
@@ -61,6 +70,7 @@ class DocumentView(QTextEdit):
         self._starts: list[int] = []
         self._ends: list[int] = []
         self._current = -1
+        self._word: tuple[int, int] | None = None  # (sentence, word) being spoken.
         self._bookmarked: set[int] = set()
         self._press_pos: QPoint | None = None
         self._side_margin = 0
@@ -83,19 +93,37 @@ class DocumentView(QTextEdit):
         if abs(zoom - self._zoom) < 1e-3:
             return
         self._zoom = zoom
-        self.setFont(QFont("Segoe UI", round(12 * zoom, 1)))
+        self._restyle()
+        self.zoom_changed.emit(zoom)
+
+    def set_font_family(self, family: str) -> None:
+        """Show the text in ``family`` (for example a dyslexia-friendly font)."""
+        if family != self._family:
+            self._family = family
+            self._restyle()
+
+    def refresh_colors(self) -> None:
+        """Re-apply palette-dependent colours after the theme changed."""
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Window, palette.color(QPalette.ColorRole.Base))
+        self.setPalette(palette)
+        self._restyle()
+
+    def _restyle(self) -> None:
+        """Lay the text out again with the current font and zoom, keeping the place."""
+        self.setFont(QFont(self._family, round(12 * self._zoom, 1)))
         self._side_margin = -1  # Recompute for the wider reading column.
         self.resizeEvent(QResizeEvent(self.size(), self.size()))
         if self._document is not None:
             bar = self.verticalScrollBar()
             fraction = bar.value() / max(bar.maximum(), 1)
-            current, bookmarked = self._current, self._bookmarked
+            current, bookmarked, word = self._current, self._bookmarked, self._word
             self.set_document(self._document)
             self._bookmarked = bookmarked
             self._current = current
+            self._word = word
             self._refresh_marks()
             bar.setValue(int(fraction * bar.maximum()))
-        self.zoom_changed.emit(zoom)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Ctrl + wheel zooms the text; the wheel alone scrolls."""
@@ -113,6 +141,7 @@ class DocumentView(QTextEdit):
         """Show ``document``, replacing any previous content."""
         self._document = document
         self._current = -1
+        self._word = None
         self._bookmarked = set()
         self._starts.clear()
         self._ends.clear()
@@ -177,7 +206,9 @@ class DocumentView(QTextEdit):
         self._starts.clear()
         self._ends.clear()
         self._current = -1
+        self._word = None
         self._bookmarked = set()
+        self._document = None
         self.setExtraSelections([])
         self.clear()
 
@@ -187,11 +218,31 @@ class DocumentView(QTextEdit):
         """Highlight sentence ``index`` and scroll it into view if needed."""
         if not 0 <= index < len(self._starts):
             self._current = -1
+            self._word = None
             self._refresh_marks()
             return
+        if index != self._current:
+            self._word = None
         self._current = index
         self._refresh_marks()
         self._scroll_to(index)
+
+    def highlight_word(self, sentence: int, word: int) -> None:
+        """Mark word ``word`` (in ``text.split()``) of the current sentence as spoken.
+
+        Ignored unless ``sentence`` is the highlighted sentence; ``word`` -1 removes
+        the word mark.
+        """
+        if sentence != self._current or self._document is None:
+            return
+        target = (sentence, word) if word >= 0 else None
+        if target == self._word:
+            return
+        self._word = target
+        self._refresh_marks()
+        span = self._word_span()
+        if span is not None:
+            self._keep_visible(span[1])
 
     def set_bookmarked(self, indexes: set[int]) -> None:
         """Mark the sentences at ``indexes`` as bookmarked (shown underlined)."""
@@ -215,20 +266,61 @@ class DocumentView(QTextEdit):
             fmt.setUnderlineColor(accent)
             mark.format = fmt
             selections.append(mark)
+        span = self._word_span()
         if self._current >= 0:
             current = QTextEdit.ExtraSelection()
             current.cursor = self._cursor_for(self._current)
             fmt = QTextCharFormat()
-            fmt.setBackground(self._highlight_color())
+            # With a spoken word shown, the sentence steps back so the word stands out.
+            fmt.setBackground(self._highlight_color(55 if span is not None else 90))
             fmt.setProperty(QTextFormat.Property.FullWidthSelection, False)
             current.format = fmt
             selections.append(current)
+        if span is not None:
+            spoken = QTextEdit.ExtraSelection()
+            cursor = QTextCursor(self.document())
+            cursor.setPosition(span[0])
+            cursor.setPosition(span[1], QTextCursor.MoveMode.KeepAnchor)
+            spoken.cursor = cursor
+            fmt = QTextCharFormat()
+            fmt.setBackground(self._highlight_color(150))
+            spoken.format = fmt
+            selections.append(spoken)
         self.setExtraSelections(selections)
 
-    def _highlight_color(self) -> QColor:
+    def _word_span(self) -> tuple[int, int] | None:
+        """Return the document positions of the spoken word, if one is shown."""
+        if self._word is None or self._document is None:
+            return None
+        sentence, word = self._word
+        if not 0 <= sentence < len(self._starts):
+            return None
+        matches = list(_WORD.finditer(self._document.sentences[sentence].text))
+        if not 0 <= word < len(matches):
+            return None
+        start = self._starts[sentence]
+        return start + matches[word].start(), start + matches[word].end()
+
+    def _highlight_color(self, alpha: int = 90) -> QColor:
         color = QColor(self.palette().color(QPalette.ColorRole.Highlight))
-        color.setAlpha(90)
+        color.setAlpha(alpha)
         return color
+
+    def _keep_visible(self, position: int) -> None:
+        """Scroll on when the spoken word reaches the bottom of the visible text."""
+        cursor = QTextCursor(self.document())
+        cursor.setPosition(position)
+        rect = self.cursorRect(cursor)
+        height = self.viewport().height()
+        if rect.top() >= 0 and rect.bottom() <= height - _PLAYER_CLEARANCE:
+            return
+        if self._scroll_animation.state() == QPropertyAnimation.State.Running:
+            return
+        bar = self.verticalScrollBar()
+        target = max(bar.minimum(), min(bar.maximum(), bar.value() + rect.top() - height // 3))
+        self._scroll_animation.setStartValue(bar.value())
+        self._scroll_animation.setEndValue(target)
+        self._scroll_animation.start()
 
     def _cursor_for(self, index: int) -> QTextCursor:
         cursor = QTextCursor(self.document())

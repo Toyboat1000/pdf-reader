@@ -84,7 +84,7 @@ Python and all dependencies for you.
 
    Close and reopen PowerShell afterwards.
 
-2. **Download PDF Reader.** Either clone the repository with Git, or download it as a
+2. **Download PDF Reader.** Either clone [the repository](https://github.com/Toyboat1000/pdf-reader) with Git, or download it as a
    ZIP from GitHub (green **Code** button, then **Download ZIP**) and extract it.
 
 3. **Start the app** from the project folder:
@@ -129,7 +129,7 @@ above.
 ### Setup
 
 ```powershell
-git clone <repository-url>
+git clone https://github.com/Toyboat1000/pdf-reader.git
 cd pdf-reader
 uv sync              # creates .venv with Python 3.12 and all dependencies
 uv run pdf-reader    # or: uv run python -m pdf_reader

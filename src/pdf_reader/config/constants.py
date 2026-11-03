@@ -14,5 +14,5 @@ APP_NAME: Final = "PDF Reader"
 APP_VERSION: Final = __version__
 """Application version, kept in sync with the package version."""
 
-PROJECT_URL: Final[str | None] = None
+PROJECT_URL: Final[str | None] = "https://github.com/Toyboat1000/pdf-reader"
 """Project home page shown in the About dialog. Set once the repository is published."""

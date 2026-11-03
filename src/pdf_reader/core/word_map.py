@@ -8,8 +8,9 @@ the surrounding sentence, so every word on the page is clickable.
 """
 
 import re
+import statistics
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
 from pdf_reader.pdf.models import BBox, Document
@@ -42,6 +43,9 @@ class WordMap:
     """Word positions for every scanned page, and their sentences."""
 
     by_page: dict[int, list[WordBox]]
+    _lines: dict[int, list[tuple[int, BBox]]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def sentence_boxes(self, sentence: int) -> list[WordBox]:
         """Return the highlighted words of a sentence, in page order."""
@@ -52,8 +56,46 @@ class WordMap:
             if w.sentence == sentence and w.spoken
         ]
 
-    def sentence_at(self, page: int, x: float, y: float) -> int | None:
-        """Return the sentence of the word at (or nearest to) a point on a page."""
+    def sentence_lines(self, sentence: int) -> list[tuple[int, BBox]]:
+        """Return one even band per line a sentence covers, as ``(page, bbox)``.
+
+        OCR word boxes differ in height (ascenders, descenders, punctuation), so the
+        words on each line are merged into a single band, and every band of the
+        sentence gets the same height, centred on its line. This is what the page
+        view draws as highlight pills.
+        """
+        cached = self._lines.get(sentence)
+        if cached is not None:
+            return cached
+        boxes = self.sentence_boxes(sentence)
+        lines: list[list[WordBox]] = []
+        for box in boxes:
+            last = lines[-1][-1] if lines else None
+            if last is not None and _same_line(last, box):
+                lines[-1].append(box)
+            else:
+                lines.append([box])
+        height = statistics.median(b.bbox[3] - b.bbox[1] for b in boxes) if boxes else 0.0
+        bands: list[tuple[int, BBox]] = []
+        for line in lines:
+            centre = statistics.median((b.bbox[1] + b.bbox[3]) / 2 for b in line)
+            x0 = min(b.bbox[0] for b in line)
+            x1 = max(b.bbox[2] for b in line)
+            bands.append((line[0].page, (x0, centre - height / 2, x1, centre + height / 2)))
+        self._lines[sentence] = bands
+        return bands
+
+    def sentence_at(
+        self, page: int, x: float, y: float, max_distance: float | None = None
+    ) -> int | None:
+        """Return the sentence of the word at (or nearest to) a point on a page.
+
+        Args:
+            page: 1-based page number.
+            x: Horizontal position in points.
+            y: Vertical position in points.
+            max_distance: If given, only words within this many points count.
+        """
         words = self.by_page.get(page)
         if not words:
             return None
@@ -64,7 +106,20 @@ class WordMap:
             dy = max(y0 - y, 0.0, y - y1)
             return dx * dx + 4 * dy * dy  # Prefer words on the same line.
 
-        return min(words, key=distance).sentence
+        nearest = min(words, key=distance)
+        if max_distance is not None and distance(nearest) > max_distance**2:
+            return None
+        return nearest.sentence
+
+
+def _same_line(previous: WordBox, word: WordBox) -> bool:
+    """Return whether ``word`` continues the line ``previous`` is on."""
+    if previous.page != word.page:
+        return False
+    height = previous.bbox[3] - previous.bbox[1]
+    centre_gap = abs((previous.bbox[1] + previous.bbox[3]) / 2 - (word.bbox[1] + word.bbox[3]) / 2)
+    horizontal_gap = word.bbox[0] - previous.bbox[2]
+    return centre_gap < 0.6 * height and -height < horizontal_gap < 3 * height
 
 
 def _norm(text: str) -> str:

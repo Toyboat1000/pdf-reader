@@ -38,6 +38,31 @@ def test_word_map_aligns_sentences_and_skips_removed_words() -> None:
     assert word_map.sentence_at(2, 0, 0) is None
 
 
+def test_sentence_lines_are_even_bands_per_line() -> None:
+    words = (
+        OcrWord("Tall", (10, 10, 30, 22)),  # Uneven word heights on line 1...
+        OcrWord("x", (34, 14, 40, 20)),
+        OcrWord("next", (10, 40, 40, 52)),  # ...and a second line.
+    )
+    document = Document(Path("x.pdf"), "x", (Page(1, 100, 100, (), words=words),))
+    word_map = build_word_map(document, [Segment("Tall x next", 1, 0)])
+    assert word_map is not None
+    lines = word_map.sentence_lines(0)
+    assert [page for page, _ in lines] == [1, 1]
+    (_, first), (_, second) = lines
+    assert (first[0], first[2]) == (10, 40)  # One band spanning the whole line.
+    assert first[3] - first[1] == second[3] - second[1]  # Same height everywhere.
+    assert word_map.sentence_lines(0) is lines  # Cached.
+
+
+def test_hover_reach_limits_sentence_at() -> None:
+    document = Document(Path("x.pdf"), "x", (ocr_page(1, ["Hello", "world."]),))
+    word_map = build_word_map(document, [Segment("Hello world.", 1, 0)])
+    assert word_map is not None
+    assert word_map.sentence_at(1, 5, 15, max_distance=14) == 0  # Just below a word.
+    assert word_map.sentence_at(1, 5, 90, max_distance=14) is None  # Far away.
+
+
 def test_no_word_map_for_text_pdfs() -> None:
     document = Document(Path("x.pdf"), "x", (Page(1, 100, 100, ()),))
     assert build_word_map(document, []) is None
@@ -96,6 +121,11 @@ def test_page_view_shows_scans_and_clicks_start_reading(
     )
     qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
     qtbot.waitUntil(lambda: window._session.position == 2)
+
+    view._set_hover(view._sentence_near(point))
+    assert view.hovered() == 2
+    view._set_hover(-1)
+    assert view.hovered() == -1
 
     window._page_images_action.trigger()  # Switch to the recognized text.
     assert window._views.currentWidget() is window._view

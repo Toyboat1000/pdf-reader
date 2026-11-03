@@ -87,7 +87,7 @@ convention = "google"
 
 [tool.ruff.lint.pep8-naming]
 # Qt event handlers and overrides use camelCase names.
-extend-ignore-names = ["closeEvent", "dragEnterEvent", "dropEvent", "mousePressEvent", "mouseReleaseEvent", "resizeEvent", "showEvent"]
+extend-ignore-names = ["closeEvent", "dragEnterEvent", "dropEvent", "mousePressEvent", "mouseReleaseEvent", "mouseMoveEvent", "leaveEvent", "paintEvent", "scrollContentsBy", "resizeEvent", "showEvent"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D"]

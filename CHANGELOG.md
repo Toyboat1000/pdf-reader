@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Scanned pages: the spoken sentence is now highlighted with one even, rounded pill
+  per line instead of a box per word.
+
+### Added
+
+- Scanned pages: hovering over a sentence previews it with soft pills and a
+  "Read from here" badge, showing exactly what a click will start reading.
+
 ## [0.4.0] - 2026-11-02
 
 Scanned PDFs (roadmap step 4, MVP).

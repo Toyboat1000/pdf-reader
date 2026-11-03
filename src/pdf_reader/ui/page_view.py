@@ -7,14 +7,25 @@ is highlighted on the image.
 import logging
 from collections import OrderedDict
 
-from PySide6.QtCore import QPoint, QRectF, Qt, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPoint,
+    QRectF,
+    Qt,
+    QVariantAnimation,
+    Signal,
+)
 from PySide6.QtGui import (
     QColor,
+    QFont,
     QImage,
+    QLinearGradient,
     QMouseEvent,
     QPainter,
     QPaintEvent,
     QPalette,
+    QPen,
     QPixmap,
     QResizeEvent,
 )
@@ -31,6 +42,7 @@ _MARGIN = 16  # Pixels around the pages.
 _MAX_ZOOM = 2.0  # Pixels per PDF point at most (about 144 dpi).
 _CACHE_PAGES = 8
 _CLICK_TOLERANCE = 6
+_HOVER_REACH = 14.0  # Points from a word within which the hover preview appears.
 
 
 class PageView(QAbstractScrollArea):
@@ -55,6 +67,13 @@ class PageView(QAbstractScrollArea):
         self._current = -1
         self._cache: OrderedDict[tuple[int, float], QPixmap] = OrderedDict()
         self._press_pos: QPoint | None = None
+        self._hover = -1
+        self._hover_opacity = 0.0
+        self._fade = QVariantAnimation(self)
+        self._fade.setDuration(140)
+        self._fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._fade.valueChanged.connect(self._on_fade)
+        self.viewport().setMouseTracking(True)
 
     # -------------------------------------------------------------- content
 
@@ -83,6 +102,7 @@ class PageView(QAbstractScrollArea):
         self._tops = []
         self._word_map = None
         self._current = -1
+        self._hover = -1
         self._cache.clear()
         self.viewport().update()
 
@@ -130,20 +150,18 @@ class PageView(QAbstractScrollArea):
         super().resizeEvent(event)
         self._relayout()
 
-    def scrollContentsBy(self, dx: int, dy: int) -> None:  # noqa: N802 - Qt override.
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
         """Repaint after scrolling (pages are drawn by hand)."""
         self.viewport().update()
 
     # ---------------------------------------------------------------- paint
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt override.
+    def paintEvent(self, event: QPaintEvent) -> None:
         """Draw the visible pages and the highlighted sentence."""
         painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.viewport().rect(), self.palette().color(QPalette.ColorRole.Mid))
         height = self.viewport().height()
-        highlight = QColor(self.palette().color(QPalette.ColorRole.Highlight))
-        highlight.setAlpha(90)
-        boxes = self._word_map.sentence_boxes(self._current) if self._word_map else []
         for index in range(len(self._sizes)):
             rect = self._page_rect(index)
             if rect.bottom() < 0 or rect.top() > height:
@@ -153,19 +171,106 @@ class PageView(QAbstractScrollArea):
                 painter.fillRect(rect, Qt.GlobalColor.white)
             else:
                 painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
-            for box in boxes:
-                if box.page == index + 1:
-                    x0, y0, x1, y1 = box.bbox
-                    painter.fillRect(
-                        QRectF(
-                            rect.left() + x0 * self._zoom - 2,
-                            rect.top() + y0 * self._zoom - 2,
-                            (x1 - x0) * self._zoom + 4,
-                            (y1 - y0) * self._zoom + 4,
-                        ),
-                        highlight,
-                    )
+        accent = self.palette().color(QPalette.ColorRole.Accent)
+        if self._hover >= 0 and self._hover != self._current and self._hover_opacity > 0:
+            hover_pills = self._pills(self._hover)
+            self._draw_pills(
+                painter, hover_pills, accent, fill=0.16, outline=0.75, opacity=self._hover_opacity
+            )
+            if hover_pills:
+                self._draw_badge(painter, hover_pills[0], accent, self._hover_opacity)
+        if self._current >= 0:
+            self._draw_pills(
+                painter, self._pills(self._current), accent, fill=0.32, outline=0.9, opacity=1.0
+            )
         painter.end()
+
+    def _pills(self, sentence: int) -> list[QRectF]:
+        """Return a sentence's highlight pills in viewport coordinates."""
+        if self._word_map is None:
+            return []
+        pills = []
+        for page, (x0, y0, x1, y1) in self._word_map.sentence_lines(sentence):
+            rect = self._page_rect(page - 1)
+            band = (y1 - y0) * self._zoom
+            pad_y = band * 0.28
+            pad_x = band * 0.28
+            pills.append(
+                QRectF(
+                    rect.left() + x0 * self._zoom - pad_x,
+                    rect.top() + y0 * self._zoom - pad_y,
+                    (x1 - x0) * self._zoom + 2 * pad_x,
+                    band + 2 * pad_y,
+                )
+            )
+        return pills
+
+    @staticmethod
+    def _draw_pills(
+        painter: QPainter,
+        pills: list[QRectF],
+        accent: QColor,
+        *,
+        fill: float,
+        outline: float,
+        opacity: float,
+    ) -> None:
+        """Draw rounded, evenly sized highlight pills with a soft glow."""
+        for pill in pills:
+            radius = pill.height() / 2
+            glow = QColor(accent)
+            glow.setAlphaF(0.10 * opacity)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(glow)
+            painter.drawRoundedRect(pill.adjusted(-3, -3, 3, 3), radius + 3, radius + 3)
+            top = QColor(accent).lighter(115)
+            top.setAlphaF(fill * opacity)
+            bottom = QColor(accent)
+            bottom.setAlphaF(fill * 1.25 * opacity)
+            gradient = QLinearGradient(pill.topLeft(), pill.bottomLeft())
+            gradient.setColorAt(0.0, top)
+            gradient.setColorAt(1.0, bottom)
+            edge = QColor(accent)
+            edge.setAlphaF(outline * opacity)
+            painter.setPen(QPen(edge, 1.4))
+            painter.setBrush(gradient)
+            painter.drawRoundedRect(pill, radius, radius)
+
+    def _draw_badge(
+        self, painter: QPainter, anchor: QRectF, accent: QColor, opacity: float
+    ) -> None:
+        """Draw a small "Read from here" tag above the first hovered pill."""
+        font = QFont(self.font())
+        font.setPointSizeF(max(font.pointSizeF() - 0.5, 8.0))
+        font.setWeight(QFont.Weight.DemiBold)
+        painter.setFont(font)
+        text = "\u25b6  Read from here"
+        metrics = painter.fontMetrics()
+        width = metrics.horizontalAdvance(text) + 20
+        height = metrics.height() + 8
+        x = max(anchor.left(), 4.0)
+        y = anchor.top() - height - 6
+        if y < 4:
+            y = anchor.bottom() + 6
+        badge = QRectF(x, y, width, height)
+        shadow = QColor(0, 0, 0)
+        shadow.setAlphaF(0.25 * opacity)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(shadow)
+        painter.drawRoundedRect(badge.translated(0, 2), height / 2, height / 2)
+        # A deep shade of the accent colour, so white text always stands out.
+        hue, saturation, lightness, _ = accent.getHslF()
+        top = QColor.fromHslF(hue, saturation, min(lightness, 0.46), opacity)
+        bottom = QColor.fromHslF(hue, saturation, min(lightness, 0.46) * 0.8, opacity)
+        gradient = QLinearGradient(badge.topLeft(), badge.bottomLeft())
+        gradient.setColorAt(0.0, top)
+        gradient.setColorAt(1.0, bottom)
+        painter.setBrush(gradient)
+        painter.drawRoundedRect(badge, height / 2, height / 2)
+        label = QColor(Qt.GlobalColor.white)
+        label.setAlphaF(opacity)
+        painter.setPen(label)
+        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, text)
 
     def _pixmap(self, page_number: int) -> QPixmap | None:
         if self._renderer is None:
@@ -204,6 +309,53 @@ class PageView(QAbstractScrollArea):
                 y = (pos.y() - rect.top()) / self._zoom
                 return self._word_map.sentence_at(index + 1, x, y)
         return None
+
+    def hovered(self) -> int:
+        """Return the sentence under the mouse, or -1."""
+        return self._hover
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """Preview the sentence that a click would start reading."""
+        self._set_hover(self._sentence_near(event.position().toPoint()))
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        """Clear the preview when the mouse leaves."""
+        self._set_hover(-1)
+        super().leaveEvent(event)
+
+    def _sentence_near(self, pos: QPoint) -> int:
+        """Return the sentence of a word close to ``pos`` (not just the nearest one)."""
+        if self._word_map is None:
+            return -1
+        for index in range(len(self._sizes)):
+            rect = self._page_rect(index)
+            if rect.contains(pos.toPointF()):
+                x = (pos.x() - rect.left()) / self._zoom
+                y = (pos.y() - rect.top()) / self._zoom
+                found = self._word_map.sentence_at(index + 1, x, y, max_distance=_HOVER_REACH)
+                return -1 if found is None else found
+        return -1
+
+    def _set_hover(self, sentence: int) -> None:
+        if sentence == self._hover:
+            return
+        self._hover = sentence
+        self.viewport().setCursor(
+            Qt.CursorShape.PointingHandCursor if sentence >= 0 else Qt.CursorShape.ArrowCursor
+        )
+        self._fade.stop()
+        if sentence >= 0:
+            self._fade.setStartValue(0.0)
+            self._fade.setEndValue(1.0)
+            self._fade.start()
+        else:
+            self._hover_opacity = 0.0
+        self.viewport().update()
+
+    def _on_fade(self, value: float) -> None:
+        self._hover_opacity = float(value)
+        self.viewport().update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """Remember where a click started."""

@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QTextCharFormat,
     QTextCursor,
     QTextFormat,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import QTextEdit, QWidget
 
@@ -33,11 +34,13 @@ class DocumentView(QTextEdit):
     """
 
     sentence_clicked = Signal(int)
+    zoom_changed = Signal(float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        # Drag to select and copy; a plain click reads from the clicked sentence.
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.setUndoRedoEnabled(False)
         # Keyboard focus stays on the window so Space and the arrow keys always
         # control playback; the mouse wheel still scrolls.
@@ -58,14 +61,54 @@ class DocumentView(QTextEdit):
         self._bookmarked: set[int] = set()
         self._press_pos: QPoint | None = None
         self._side_margin = 0
+        self._zoom = 1.0
+        self._document: ReadingDocument | None = None
         self._scroll_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
         self._scroll_animation.setDuration(250)
         self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     # ---------------------------------------------------------------- content
 
+    @property
+    def zoom(self) -> float:
+        """Return the text zoom level (1.0 = normal size)."""
+        return self._zoom
+
+    def set_zoom(self, zoom: float) -> None:
+        """Scale the text, keeping the highlight, bookmarks, and scroll position."""
+        zoom = max(0.6, min(3.0, zoom))
+        if abs(zoom - self._zoom) < 1e-3:
+            return
+        self._zoom = zoom
+        self.setFont(QFont("Segoe UI", round(12 * zoom, 1)))
+        self._side_margin = -1  # Recompute for the wider reading column.
+        self.resizeEvent(QResizeEvent(self.size(), self.size()))
+        if self._document is not None:
+            bar = self.verticalScrollBar()
+            fraction = bar.value() / max(bar.maximum(), 1)
+            current, bookmarked = self._current, self._bookmarked
+            self.set_document(self._document)
+            self._bookmarked = bookmarked
+            self._current = current
+            self._refresh_marks()
+            bar.setValue(int(fraction * bar.maximum()))
+        self.zoom_changed.emit(zoom)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Ctrl + wheel zooms the text; the wheel alone scrolls."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.set_zoom(self._zoom * (1.1 ** (event.angleDelta().y() / 120)))
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def selected_text(self) -> str:
+        """Return the selected text with ordinary line breaks."""
+        return self.textCursor().selectedText().replace("\u2029", "\n")
+
     def set_document(self, document: ReadingDocument) -> None:
         """Show ``document``, replacing any previous content."""
+        self._document = document
         self._current = -1
         self._bookmarked = set()
         self._starts.clear()
@@ -88,7 +131,7 @@ class DocumentView(QTextEdit):
         heading_block.setBottomMargin(8)
         heading_char = QTextCharFormat()
         heading_char.setFontWeight(QFont.Weight.DemiBold)
-        heading_char.setFontPointSize(9)
+        heading_char.setFontPointSize(round(9 * self._zoom, 1))
         heading_char.setForeground(self.palette().color(QPalette.ColorRole.PlaceholderText))
 
         first = True
@@ -234,6 +277,8 @@ class DocumentView(QTextEdit):
         ):
             self.sentence_clicked.emit(index)
         super().mouseReleaseEvent(event)
+        if not self.textCursor().hasSelection():
+            self.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """Keep a comfortable reading width by adding side margins in wide windows.
@@ -242,7 +287,7 @@ class DocumentView(QTextEdit):
         resizes the viewport. The margins are therefore derived from the widget's
         width (which they don't affect) and only applied when they change.
         """
-        side = max(0, (self.width() - _MAX_TEXT_WIDTH) // 2)
+        side = max(0, (self.width() - int(_MAX_TEXT_WIDTH * self._zoom)) // 2)
         if side != self._side_margin:
             self._side_margin = side
             self.setViewportMargins(side, 0, side, 0)

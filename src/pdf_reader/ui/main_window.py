@@ -34,6 +34,7 @@ from pdf_reader.config.settings import MAX_SPEED, MIN_SPEED, Settings, save_sett
 from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.session import ReadingSession, ReadingState
 from pdf_reader.library import Bookmark
+from pdf_reader.text.pipeline import build_pipeline
 from pdf_reader.tts.base import Voice
 from pdf_reader.ui.bookmarks_panel import BookmarksPanel
 from pdf_reader.ui.bridge import SessionBridge
@@ -242,16 +243,50 @@ class MainWindow(QMainWindow):
         playback.addAction(self._prev_action)
         playback.addAction(self._next_action)
 
-        self._page_images_action = QAction("Show &Page Images", self)
+        edit_menu = bar.addMenu("&Edit")
+        self._copy_action = edit_menu.addAction("&Copy", self._copy)
+        self._copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        self._copy_all_action = edit_menu.addAction("Copy &All Text", self._copy_all)
+        self._copy_all_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        edit_menu.addSeparator()
+        select_all = edit_menu.addAction("Select A&ll", self._select_all)
+        select_all.setShortcut(QKeySequence.StandardKey.SelectAll)
+
+        view_menu = bar.addMenu("&View")
+        zoom_in = view_menu.addAction("Zoom &In", lambda: self._zoom_by(1.15))
+        zoom_in.setShortcuts([QKeySequence("Ctrl+="), QKeySequence.StandardKey.ZoomIn])
+        zoom_out = view_menu.addAction("Zoom &Out", lambda: self._zoom_by(1 / 1.15))
+        zoom_out.setShortcuts([QKeySequence("Ctrl+-"), QKeySequence.StandardKey.ZoomOut])
+        reset = view_menu.addAction("&Actual Size", self._zoom_reset)
+        reset.setShortcut(QKeySequence("Ctrl+0"))
+
+        self._page_images_action = QAction("Show PDFs as &Page Images", self)
         self._page_images_action.setCheckable(True)
+        self._page_images_action.setChecked(self._settings.page_view)
         self._page_images_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
         self._page_images_action.setToolTip(
-            "Scanned documents: show the page images (click a word to read from there) "
-            "or the recognized text"
+            "On: see the real pages (click any word to read from there). "
+            "Off: see the extracted text only."
         )
         self._page_images_action.toggled.connect(self._show_page_images)
-        view_menu = bar.addMenu("&View")
-        view_menu.addAction(self._page_images_action)
+        self._parentheses_action = QAction("Read Text in (&Parentheses)", self)
+        self._parentheses_action.setCheckable(True)
+        self._parentheses_action.setChecked(self._settings.read_parentheses)
+        self._parentheses_action.toggled.connect(self._reading_options_changed)
+        self._asides_action = QAction("Skip &Sidebars, Captions && Labels", self)
+        self._asides_action.setCheckable(True)
+        self._asides_action.setChecked(self._settings.skip_asides)
+        self._asides_action.setToolTip(
+            "Follow the main text of textbooks and articles; skip boxes in the margins, "
+            "figure captions, and labels inside diagrams."
+        )
+        self._asides_action.toggled.connect(self._reading_options_changed)
+        settings_menu = bar.addMenu("&Settings")
+        settings_menu.setToolTipsVisible(True)
+        settings_menu.addAction(self._page_images_action)
+        settings_menu.addSeparator()
+        settings_menu.addAction(self._parentheses_action)
+        settings_menu.addAction(self._asides_action)
 
         bookmarks_menu = bar.addMenu("&Bookmarks")
         bookmarks_menu.addAction(self._add_bookmark_action)
@@ -280,6 +315,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self._prev_action)
         toolbar.addAction(self._play_action)
+        toolbar.widgetForAction(self._play_action).setObjectName("play-button")
         toolbar.addAction(self._stop_action)
         toolbar.addAction(self._next_action)
         toolbar.addSeparator()
@@ -339,6 +375,10 @@ class MainWindow(QMainWindow):
         b.resumed.connect(self._on_resumed)
         b.loading_progress.connect(self._on_loading_progress)
         self._page_view.sentence_clicked.connect(lambda index: self._session.seek(index, play=True))
+        self._page_view.copy_requested.connect(self._copy)
+        self._page_view.copy_all_requested.connect(self._copy_all)
+        self._page_view.zoom_changed.connect(self._on_zoom_changed)
+        self._view.zoom_changed.connect(self._on_zoom_changed)
         b.bookmarks_changed.connect(self._on_bookmarks_changed)
         self._banner.start_over.connect(lambda: self._session.seek(0, play=False))
         panel = self._bookmarks_panel
@@ -454,14 +494,11 @@ class MainWindow(QMainWindow):
         self._banner.hide()
         self._view.set_document(document)
         self._ocr_progress = None
-        scanned = document.word_map is not None
-        if scanned:
+        if document.word_map is not None:
             self._page_view.set_document(document)
         else:
             self._page_view.clear_document()
-        self._page_images_action.setEnabled(scanned)
-        self._page_images_action.setChecked(scanned)
-        self._show_page_images(scanned)
+        self._show_page_images(self._page_images_action.isChecked())
         self.setWindowTitle(f"{document.display_name} - {APP_NAME}")
         self._view.highlight(self._session.position)
         self._update_controls()
@@ -539,8 +576,70 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _show_page_images(self, show: bool) -> None:
+        self._settings.page_view = show
         use_pages = show and self._document is not None and self._document.word_map is not None
         self._views.setCurrentWidget(self._page_view if use_pages else self._view)
+
+    @Slot()
+    def _reading_options_changed(self) -> None:
+        self._settings.read_parentheses = self._parentheses_action.isChecked()
+        self._settings.skip_asides = self._asides_action.isChecked()
+        self._session.set_pipeline(
+            build_pipeline(
+                read_parentheses=self._settings.read_parentheses,
+                skip_asides=self._settings.skip_asides,
+            )
+        )
+        self._update_controls()
+
+    # ------------------------------------------------------------ copy & zoom
+
+    def _active_view(self) -> PageView | DocumentView:
+        return self._page_view if self._views.currentWidget() is self._page_view else self._view
+
+    @Slot()
+    def _copy(self) -> None:
+        view = self._active_view()
+        text = view.selected_text()
+        if not text and self._document is not None and self._document.sentences:
+            # Nothing selected: copy the sentence being read.
+            text = self._document.sentences[self._session.position].text
+        if text:
+            QGuiApplication.clipboard().setText(text)
+            self.statusBar().showMessage("Copied to the clipboard.", 2500)
+
+    @Slot()
+    def _copy_all(self) -> None:
+        if self._document is None:
+            return
+        paragraphs: list[list[str]] = []
+        last_block = None
+        for sentence in self._document.sentences:
+            if sentence.block != last_block or not paragraphs:
+                paragraphs.append([])
+                last_block = sentence.block
+            paragraphs[-1].append(sentence.text)
+        QGuiApplication.clipboard().setText("\n\n".join(" ".join(p) for p in paragraphs))
+        self.statusBar().showMessage("All text copied to the clipboard.", 2500)
+
+    @Slot()
+    def _select_all(self) -> None:
+        view = self._active_view()
+        if isinstance(view, PageView):
+            view.select_all()
+        else:
+            view.selectAll()
+
+    def _zoom_by(self, factor: float) -> None:
+        view = self._active_view()
+        view.set_zoom(view.zoom * factor)
+
+    def _zoom_reset(self) -> None:
+        self._active_view().set_zoom(1.0)
+
+    @Slot(float)
+    def _on_zoom_changed(self, zoom: float) -> None:
+        self.statusBar().showMessage(f"Zoom {zoom:.0%}", 1500)
 
     @Slot(int, int)
     def _on_loading_progress(self, done: int, total: int) -> None:
@@ -670,6 +769,8 @@ class MainWindow(QMainWindow):
         except (UnicodeEncodeError, ValueError):
             log.warning("Ignoring invalid saved window layout")
         self._bookmarks_panel.setVisible(self._settings.show_bookmarks)
+        self._page_view.set_zoom(self._settings.page_zoom)
+        self._view.set_zoom(self._settings.text_zoom)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Save settings and stop audio and background work before closing."""
@@ -679,6 +780,8 @@ class MainWindow(QMainWindow):
             self._settings.window_geometry = bytes(self.saveGeometry().toHex().data()).decode()
             self._settings.window_state = bytes(self.saveState().toHex().data()).decode()
             self._settings.show_bookmarks = not self._bookmarks_panel.isHidden()
+            self._settings.page_zoom = self._page_view.zoom
+            self._settings.text_zoom = self._view.zoom
             self._settings.speed = self._speed_slider.value() / 100
             save_settings(self._settings, self._settings_path)
             self._session.shutdown()

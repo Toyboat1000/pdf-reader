@@ -252,6 +252,78 @@ def build_scanned_sample(output: Path) -> None:
     scanned.close()
 
 
+# ----------------------------------------------------------------- textbook sample
+
+TEXTBOOK_MAIN: list[list[str]] = [
+    [
+        "2.1 How Ecosystems Work",
+        "An ecosystem is a community of living things together with the place where they "
+        "live. Plants capture energy from sunlight, animals eat the plants, and other "
+        "animals eat those animals. Every living thing depends on many others.",
+        "Energy moves through an ecosystem in one direction. It enters as sunlight and "
+        "leaves as heat. At each step along the food chain, most of the energy is used up, "
+        "which is why there are far fewer predators than",
+    ],
+    [
+        "plants in any healthy habitat. Scientists call this pattern the energy pyramid.",
+        "Nutrients behave differently. Unlike energy, nutrients such as carbon and nitrogen "
+        "are recycled again and again. When plants and animals die, decomposers break them "
+        "down and return the nutrients to the soil.",
+        "Thank you for reading this textbook sample to the end.",
+    ],
+]
+TEXTBOOK_SIDEBAR = [
+    "KEY TERMS",
+    "Producer: a living thing that makes its own food.",
+    "Consumer: a living thing that eats others.",
+]
+TEXTBOOK_CAPTION = "Figure 2.1: A simple food chain in a grassland habitat."
+TEXTBOOK_HEADER = "Chapter 2 \u2022 Ecosystems"
+
+
+def build_textbook_sample(output: Path, *, scanned: bool = True) -> None:
+    """Write a textbook-style sample: main column, margin sidebar, figure, caption.
+
+    With ``scanned`` the pages are flattened to images, like a photocopied textbook.
+    """
+    doc = pymupdf.open()
+    main_left, main_right = 200.0, 523.0
+    for number, paragraphs in enumerate(TEXTBOOK_MAIN, start=1):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((main_left, 44), TEXTBOOK_HEADER, fontsize=9, fontname="helv")
+        y = 100.0
+        for i, paragraph in enumerate(paragraphs):
+            heading = number == 1 and i == 0
+            size = 16 if heading else 11
+            y = _draw_paragraphs(page, main_left, y, main_right - main_left, [paragraph], size)
+            if number == 1 and i == 1:
+                # A figure with labels inside it and a caption below it.
+                box = pymupdf.Rect(main_left, y, main_right, y + 120)
+                page.draw_rect(box, color=(0.4, 0.4, 0.4), fill=(0.9, 0.9, 0.9))
+                for label, x in (("Grass", 230), ("Rabbit", 340), ("Fox", 450)):
+                    page.insert_text((x, y + 65), label, fontsize=8, fontname="helv")
+                y = _draw_paragraphs(
+                    page, main_left, y + 136, main_right - main_left, [TEXTBOOK_CAPTION], 8.5
+                )
+        if number == 1:
+            # A boxed sidebar in the outer margin.
+            side = pymupdf.Rect(48, 140, 180, 330)
+            page.draw_rect(side, color=(0.3, 0.3, 0.3), fill=(0.95, 0.95, 0.95))
+            _draw_paragraphs(page, 56, 160, 116, TEXTBOOK_SIDEBAR, 8.5)
+        page.insert_text((290, 812), str(number + 40), fontsize=9, fontname="helv")
+    if scanned:
+        flat = pymupdf.open()
+        for page in doc:
+            image = page.get_pixmap(dpi=150, colorspace=pymupdf.csGRAY)
+            target = flat.new_page(width=page.rect.width, height=page.rect.height)
+            target.insert_image(target.rect, stream=image.tobytes("png"))
+        flat.save(output)
+        flat.close()
+    else:
+        doc.save(output)
+    doc.close()
+
+
 def main() -> None:
     """Build a sample PDF at the path given on the command line."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -262,8 +334,14 @@ def main() -> None:
     parser.add_argument(
         "--scanned", action="store_true", help="build a scanned sample (page images only)"
     )
+    parser.add_argument(
+        "--textbook", action="store_true", help="build a scanned textbook-style sample"
+    )
     args = parser.parse_args()
-    if args.scanned:
+    if args.textbook:
+        output = args.output or Path("textbook-sample.pdf")
+        build_textbook_sample(output)
+    elif args.scanned:
         output = args.output or Path("scanned-sample.pdf")
         build_scanned_sample(output)
     elif args.layout:

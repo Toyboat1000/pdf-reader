@@ -507,6 +507,18 @@ class ReadingSession(PlaybackListener):
             self._can_resume = False
             self._controller.preview(PREVIEW_TEXT, voice_id, self._speed)
 
+    def set_pipeline(self, pipeline: TextPipeline) -> None:
+        """Use different text processing, re-reading the open document with it."""
+        with self._lock:
+            self._pipeline = pipeline
+            document = self._document
+        if document is None:
+            return
+        if document.path is not None:
+            self.open_document(document.path)
+        elif document.text is not None:
+            self.open_text(document.text)
+
     # ----------------------------------------------------------- bookmarks
 
     @property

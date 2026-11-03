@@ -117,7 +117,8 @@ def test_page_view_shows_scans_and_clicks_start_reading(
     rect = view._page_rect(target.page - 1)
     x0, y0, x1, y1 = target.bbox
     point = QPoint(
-        int(rect.left() + (x0 + x1) / 2 * view._zoom), int(rect.top() + (y0 + y1) / 2 * view._zoom)
+        int(rect.left() + (x0 + x1) / 2 * view._scale),
+        int(rect.top() + (y0 + y1) / 2 * view._scale),
     )
     qtbot.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=point)
     qtbot.waitUntil(lambda: window._session.position == 2)

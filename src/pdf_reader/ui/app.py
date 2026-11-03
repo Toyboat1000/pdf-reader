@@ -14,9 +14,11 @@ from pdf_reader.config.paths import library_file, logs_dir, models_dir, settings
 from pdf_reader.config.settings import load_settings
 from pdf_reader.core.session import ReadingSession
 from pdf_reader.library import LibraryStore
+from pdf_reader.text.pipeline import build_pipeline
 from pdf_reader.tts.kokoro_engine import KokoroEngine
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.main_window import MainWindow
+from pdf_reader.ui.theme import STYLE_SHEET
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     app = QApplication(args)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app.setStyleSheet(STYLE_SHEET)
 
     settings_path = settings_file()
     settings = load_settings(settings_path)
@@ -48,6 +51,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         voice=settings.voice,
         speed=settings.speed,
         library=LibraryStore(library_file()),
+        pipeline=build_pipeline(
+            read_parentheses=settings.read_parentheses, skip_asides=settings.skip_asides
+        ),
     )
     window = MainWindow(session, bridge, settings, settings_path)
     window.show()

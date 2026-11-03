@@ -9,7 +9,7 @@ It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-s
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.4). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.5). See the [roadmap](ROADMAP.md) for what's next.
 
 ![PDF Reader resuming a two-column document, with bookmarks and the current sentence highlighted](docs/screenshot.png)
 
@@ -22,6 +22,13 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 - **Smart text cleanup.** Page numbers, running headers and footers, and footnotes are
   skipped; two-column pages are read column by column; and sentences that continue
   across a column or page break are read as one sentence.
+- **See the real page.** PDFs open as page images: click any word to start reading
+  there, hover to preview, and the spoken sentence is highlighted right on the page.
+  Prefer plain text? Settings > Show PDFs as Page Images.
+- **Textbook-smart.** Follows the main text and skips sidebars, margin boxes, figure
+  captions, and diagram labels (Settings > Skip Sidebars, Captions & Labels).
+- **Copy and zoom.** Select text and copy it (Ctrl+C), copy everything
+  (Ctrl+Shift+C), and zoom with Ctrl + mouse wheel.
 - **Scanned PDFs too.** Pages that are just images (from a scanner or copier) are read
   with the text recognition (OCR) built into Windows, offline. The pages are shown as
   images: click any word to start reading there, and the spoken sentence is
@@ -61,7 +68,9 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 | Ctrl+E | Edit the current text document |
 | Ctrl+B | Bookmark the current sentence |
 | Ctrl+Shift+B | Show or hide the Bookmarks panel |
-| Ctrl+Shift+P | Scanned PDFs: switch between page images and recognized text |
+| Ctrl+Shift+P | Switch between page images and the text view |
+| Ctrl+C / Ctrl+Shift+C | Copy the selection / copy all text |
+| Ctrl + wheel, Ctrl+= / Ctrl+- / Ctrl+0 | Zoom in / out / actual size |
 
 ## Requirements
 

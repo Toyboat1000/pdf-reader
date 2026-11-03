@@ -105,32 +105,44 @@ def _union(boxes: list[BBox]) -> BBox:
 
 
 def _group_lines(lines: list[tuple[str, BBox, list[OcrWord]]]) -> tuple[TextBlock, ...]:
-    """Group recognized lines into paragraph blocks by spacing, size, and position."""
-    blocks: list[TextBlock] = []
-    current: list[TextLine] = []
+    """Group recognized lines into paragraph blocks by position, not by OCR order.
+
+    Lines are taken top to bottom; each joins the paragraph directly above it when
+    they are close, aligned in the same column, and of similar size. This keeps a
+    margin sidebar and the main text apart even when OCR reports their lines
+    interleaved, which matters for textbooks.
+    """
     heights = [b[3] - b[1] for _, b, _ in lines]
     typical = statistics.median(heights) if heights else 10.0
-    for text, box, _words in lines:
+    paragraphs: list[list[TextLine]] = []
+    for text, box, _words in sorted(lines, key=lambda line: (line[1][1], line[1][0])):
         height = box[3] - box[1]
         # Word boxes are about one font size tall; this keeps sizes comparable.
         line = TextLine(text=text, bbox=box, font_size=round(height, 1))
-        if current:
-            prev = current[-1].bbox
+        best: list[TextLine] | None = None
+        best_gap = float("inf")
+        for paragraph in paragraphs:
+            prev = paragraph[-1].bbox
             prev_height = prev[3] - prev[1]
             gap = box[1] - prev[3]
             size_change = max(height, prev_height) / max(min(height, prev_height), 0.1)
-            no_overlap = box[0] > prev[2] or box[2] < prev[0]
+            overlap = min(box[2], prev[2]) - max(box[0], prev[0])
+            narrower = max(min(box[2] - box[0], prev[2] - prev[0]), 1.0)
+            aligned = overlap >= 0.5 * narrower or (
+                overlap > 0 and abs(box[0] - prev[0]) <= 1.5 * max(prev_height, typical)
+            )
             if (
-                gap > 0.8 * max(prev_height, typical)  # Blank space between lines.
-                or gap < -prev_height  # Jumped back up: another column.
-                or no_overlap  # Side by side: another column.
+                -0.5 * prev_height <= gap <= 0.8 * max(prev_height, typical)
+                and aligned
                 # Heading versus body. Line heights vary with ascenders and
                 # descenders, so only a large change counts.
-                or size_change > 1.6
+                and size_change <= 1.6
+                and gap < best_gap
             ):
-                blocks.append(TextBlock(tuple(current), _union([ln.bbox for ln in current])))
-                current = []
-        current.append(line)
-    if current:
-        blocks.append(TextBlock(tuple(current), _union([ln.bbox for ln in current])))
-    return tuple(blocks)
+                best, best_gap = paragraph, gap
+        if best is None:
+            paragraphs.append([line])
+        else:
+            best.append(line)
+    blocks = [TextBlock(tuple(p), _union([ln.bbox for ln in p])) for p in paragraphs]
+    return tuple(sorted(blocks, key=lambda b: (b.bbox[1], b.bbox[0])))

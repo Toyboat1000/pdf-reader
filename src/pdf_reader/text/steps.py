@@ -88,6 +88,19 @@ def normalize_whitespace(text: str) -> str:
     return _WHITESPACE.sub(" ", text).strip()
 
 
+_PARENTHETICAL = re.compile(r"\s*\([^()]*\)")
+_SPACE_BEFORE_PUNCTUATION = re.compile(r"\s+([,.;:!?])")
+
+
+@text_step
+def remove_parentheticals(text: str) -> str:
+    """Remove text in (parentheses), including nested ones, and tidy the spacing."""
+    previous = None
+    while previous != text:
+        previous, text = text, _PARENTHETICAL.sub("", text)
+    return _SPACE_BEFORE_PUNCTUATION.sub(r"\1", text).strip()
+
+
 def drop_unspeakable(segments: list[Segment]) -> list[Segment]:
     """Remove segments without any letters or digits (stray bullets, rules, symbols)."""
     return [s for s in segments if any(ch.isalnum() for ch in s.text)]

@@ -223,6 +223,100 @@ def remove_footnote_markers(segments: list[Segment]) -> list[Segment]:
     return result
 
 
+# ------------------------------------------------- sidebars, captions, labels
+
+_CAPTION = re.compile(
+    r"^\s*(?:figure|fig\.?|table|chart|graph|diagram|exhibit|map|photo(?:graph)?|image|"
+    r"illustration|plate|box|source|credit)\s*[\dIVXivx]*(?:[.\-\u2013]\d+)*\s*[:.|\u2014\u2013-]",
+    re.IGNORECASE,
+)
+_MIN_MAIN_CHARS = 60  # A block must be at least this long to define the main column.
+
+
+def _chars(segment: Segment) -> int:
+    return len(segment.text.strip())
+
+
+def _lines(segment: Segment) -> int:
+    return len(segment.source.lines) if segment.source is not None else 1
+
+
+def is_caption(segment: Segment, body: float) -> bool:
+    """Return whether a block looks like a figure or table caption ("Figure 2.1: ...")."""
+    if not _CAPTION.match(segment.text):
+        return False
+    size = _font_size(segment)
+    return _lines(segment) <= 4 or (size is not None and size < body * SMALL_FONT_RATIO)
+
+
+def remove_asides(segments: list[Segment]) -> list[Segment]:
+    """Keep the main reading flow; skip sidebars, margin boxes, captions, and labels.
+
+    For each page, the main text column(s) are the columns holding most of the
+    body-size text. Blocks lying mostly outside them (margin sidebars, pull quotes,
+    "Key terms" boxes) are skipped, as are figure and table captions and short
+    small-print fragments inside the main area (labels inside diagrams and charts).
+    Headings and body text in the main column are always kept.
+    """
+    body = body_font_size(segments)
+    if body is None:
+        return segments
+    result: list[Segment] = []
+    for _, group in groupby(segments, key=lambda s: s.page):
+        result.extend(_main_flow(list(group), body))
+    _log_removed("remove_asides", len(segments), len(result))
+    return result
+
+
+def _main_flow(page: list[Segment], body: float) -> list[Segment]:
+    laid_out = [s for s in page if s.bbox is not None and s.source is not None]
+    body_blocks = [
+        s
+        for s in laid_out
+        if (size := _font_size(s)) is not None
+        and 0.8 * body <= size <= 1.25 * body
+        and _chars(s) >= _MIN_MAIN_CHARS
+    ]
+    # Group body blocks into columns by horizontal overlap; weigh them by text.
+    columns: list[list[float]] = []  # [x0, x1, chars]
+    for segment in sorted(body_blocks, key=lambda s: _box(s)[0]):
+        x0, _, x1, _ = _box(segment)
+        if columns and x0 < columns[-1][1] + MIN_GUTTER:
+            columns[-1][1] = max(columns[-1][1], x1)
+            columns[-1][2] += _chars(segment)
+        else:
+            columns.append([x0, x1, float(_chars(segment))])
+    heaviest = max((c[2] for c in columns), default=0.0)
+    main = [(c[0], c[1]) for c in columns if c[2] >= 0.3 * heaviest]
+    main_width = max((m1 - m0 for m0, m1 in main), default=0.0)
+
+    def in_main(segment: Segment) -> bool:
+        x0, _, x1, _ = _box(segment)
+        width = max(x1 - x0, 1.0)
+        covered = sum(max(0.0, min(x1, m1) - max(x0, m0)) for m0, m1 in main)
+        return covered >= 0.5 * width
+
+    kept = []
+    for segment in page:
+        if segment.bbox is None or segment.source is None:
+            kept.append(segment)
+            continue
+        size = _font_size(segment) or body
+        if is_caption(segment, body):
+            continue
+        if main and not in_main(segment):
+            # Outside the main text. It is a sidebar or margin box if it is also set
+            # in smaller print or is much narrower; otherwise (say, a short second
+            # column) it is kept.
+            x0, _, x1, _ = _box(segment)
+            if size < body * SMALL_FONT_RATIO or (x1 - x0) < 0.6 * main_width:
+                continue
+        if size < 0.85 * body and len(segment.text.split()) < 6:
+            continue  # A label inside a figure, chart, or diagram.
+        kept.append(segment)
+    return kept
+
+
 # ----------------------------------------------------------------- columns
 
 

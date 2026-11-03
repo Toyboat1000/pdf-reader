@@ -8,6 +8,7 @@ from pdf_reader.pdf.models import Document
 from pdf_reader.text.layout import (
     join_continued_blocks,
     order_columns,
+    remove_asides,
     remove_footnote_markers,
     remove_footnotes,
     remove_page_numbers,
@@ -20,6 +21,7 @@ from pdf_reader.text.steps import (
     fix_hyphenated_line_breaks,
     normalize_unicode,
     normalize_whitespace,
+    remove_parentheticals,
     split_long_sentences,
     split_sentences,
     strip_superscript_markers,
@@ -28,8 +30,15 @@ from pdf_reader.text.steps import (
 log = logging.getLogger(__name__)
 
 
-def default_steps() -> list[TextStep]:
+def default_steps(*, read_parentheses: bool = True, skip_asides: bool = True) -> list[TextStep]:
     """Return the standard steps in order.
+
+    Args:
+        read_parentheses: Keep text in (parentheses); when False it is not read.
+        skip_asides: Skip sidebars, captions, and figure labels (see
+            :func:`~pdf_reader.text.layout.remove_asides`).
+
+    Order:
 
     1. Layout cleanup (see :mod:`pdf_reader.text.layout`). These need each segment to
        still be exactly one PDF block, so they come first; ``order_columns`` must
@@ -42,6 +51,7 @@ def default_steps() -> list[TextStep]:
         remove_page_numbers,
         remove_running_headers_footers,
         remove_footnotes,
+        *([remove_asides] if skip_asides else []),
         remove_footnote_markers,
         order_columns,
         join_continued_blocks,
@@ -49,11 +59,17 @@ def default_steps() -> list[TextStep]:
         normalize_unicode,
         fix_hyphenated_line_breaks,
         normalize_whitespace,
+        *([] if read_parentheses else [remove_parentheticals]),
         drop_unspeakable,
         split_sentences,
         split_long_sentences(),
         drop_unspeakable,
     ]
+
+
+def build_pipeline(*, read_parentheses: bool = True, skip_asides: bool = True) -> "TextPipeline":
+    """Create a pipeline with the standard steps and the given reading options."""
+    return TextPipeline(default_steps(read_parentheses=read_parentheses, skip_asides=skip_asides))
 
 
 class TextPipeline:

@@ -33,6 +33,11 @@ class Settings:
         window_state: Opaque, hex-encoded toolbar and panel layout from the UI.
         last_folder: Folder of the most recently opened document.
         show_bookmarks: Whether the bookmarks panel is shown.
+        page_view: Show PDFs as page images (True) or as extracted text only.
+        read_parentheses: Read text in (parentheses) aloud.
+        skip_asides: Skip sidebars, figure captions, and labels in PDFs.
+        page_zoom: Zoom level of the page view (1.0 = fit to width).
+        text_zoom: Zoom level of the text view (1.0 = normal size).
     """
 
     voice: str = DEFAULT_VOICE
@@ -41,6 +46,11 @@ class Settings:
     window_state: str | None = None
     last_folder: str | None = None
     show_bookmarks: bool = False
+    page_view: bool = True
+    read_parentheses: bool = True
+    skip_asides: bool = True
+    page_zoom: float = 1.0
+    text_zoom: float = 1.0
 
 
 def clamp_speed(speed: float) -> float:
@@ -59,8 +69,13 @@ def _validated(raw: dict[str, Any]) -> Settings:
     for name in ("window_geometry", "window_state", "last_folder"):
         if isinstance(value := raw.get(name), str) and value:
             setattr(result, name, value)
-    if isinstance(show := raw.get("show_bookmarks"), bool):
-        result.show_bookmarks = show
+    for name in ("show_bookmarks", "page_view", "read_parentheses", "skip_asides"):
+        if isinstance(flag := raw.get(name), bool):
+            setattr(result, name, flag)
+    for name in ("page_zoom", "text_zoom"):
+        value = raw.get(name)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            setattr(result, name, max(0.5, min(4.0, float(value))))
     known = {f.name for f in fields(Settings)}
     if unknown := set(raw) - known:
         log.debug("Ignoring unknown settings keys: %s", sorted(unknown))

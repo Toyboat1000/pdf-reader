@@ -1,4 +1,4 @@
-"""Link recognized words on scanned pages to the sentences that are read aloud.
+"""Link the words on PDF pages (from the text layer or OCR) to the sentences read aloud.
 
 The text pipeline cleans and reshapes OCR text (removing page numbers, joining
 hyphenated words, ...), so sentences can't be traced back to words directly. Instead,
@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-from pdf_reader.pdf.models import BBox, Document
+from pdf_reader.pdf.models import BBox, Document, OcrWord
 from pdf_reader.text.segment import Segment
 
 _NON_WORD = re.compile(r"[^\w]+")
@@ -30,12 +30,14 @@ class WordBox:
         spoken: True if the word is part of the sentence's spoken text (it is
             highlighted); False if it was only attributed for clicking (e.g. a
             removed page number next to the sentence).
+        text: The word as printed on the page (for copying).
     """
 
     page: int
     bbox: BBox
     sentence: int
     spoken: bool
+    text: str = ""
 
 
 @dataclass(frozen=True)
@@ -67,21 +69,7 @@ class WordMap:
         cached = self._lines.get(sentence)
         if cached is not None:
             return cached
-        boxes = self.sentence_boxes(sentence)
-        lines: list[list[WordBox]] = []
-        for box in boxes:
-            last = lines[-1][-1] if lines else None
-            if last is not None and _same_line(last, box):
-                lines[-1].append(box)
-            else:
-                lines.append([box])
-        height = statistics.median(b.bbox[3] - b.bbox[1] for b in boxes) if boxes else 0.0
-        bands: list[tuple[int, BBox]] = []
-        for line in lines:
-            centre = statistics.median((b.bbox[1] + b.bbox[3]) / 2 for b in line)
-            x0 = min(b.bbox[0] for b in line)
-            x1 = max(b.bbox[2] for b in line)
-            bands.append((line[0].page, (x0, centre - height / 2, x1, centre + height / 2)))
+        bands = line_bands(self.sentence_boxes(sentence))
         self._lines[sentence] = bands
         return bands
 
@@ -112,6 +100,29 @@ class WordMap:
         return nearest.sentence
 
 
+def line_bands(boxes: Sequence[WordBox]) -> list[tuple[int, BBox]]:
+    """Merge words into one even band per line, as ``(page, bbox)`` in reading order.
+
+    Every band gets the same height (the median word height), centred on its line,
+    so highlights look uniform even though word boxes differ in height.
+    """
+    lines: list[list[WordBox]] = []
+    for box in boxes:
+        last = lines[-1][-1] if lines else None
+        if last is not None and _same_line(last, box):
+            lines[-1].append(box)
+        else:
+            lines.append([box])
+    height = statistics.median(b.bbox[3] - b.bbox[1] for b in boxes) if boxes else 0.0
+    bands: list[tuple[int, BBox]] = []
+    for line in lines:
+        centre = statistics.median((b.bbox[1] + b.bbox[3]) / 2 for b in line)
+        x0 = min(b.bbox[0] for b in line)
+        x1 = max(b.bbox[2] for b in line)
+        bands.append((line[0].page, (x0, centre - height / 2, x1, centre + height / 2)))
+    return bands
+
+
 def _same_line(previous: WordBox, word: WordBox) -> bool:
     """Return whether ``word`` continues the line ``previous`` is on."""
     if previous.page != word.page:
@@ -132,20 +143,18 @@ def build_word_map(document: Document, sentences: Sequence[Segment]) -> WordMap 
     Returns:
         The map, or ``None`` if the document has no scanned pages.
     """
-    if not document.is_scanned:
+    if not document.has_words:
         return None
     by_page: dict[int, list[WordBox]] = {}
     for page in document.pages:
-        if not page.is_scanned:
+        if not page.words:
             continue
+        on_page = [(i, s) for i, s in enumerate(sentences) if s.page == page.number]
         tokens: list[tuple[str, int]] = [
-            (norm, i)
-            for i, s in enumerate(sentences)
-            if s.page == page.number
-            for word in s.text.split()
-            if (norm := _norm(word))
+            (norm, i) for i, s in on_page for word in s.text.split() if (norm := _norm(word))
         ]
-        ocr = [_norm(w.text) for w in page.words]
+        words = _reading_order(page.words, [s.bbox for _, s in on_page])
+        ocr = [_norm(w.text) for w in words]
         owner: list[int | None] = [None] * len(ocr)
         matcher = SequenceMatcher(None, [t for t, _ in tokens], ocr, autojunk=False)
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -158,8 +167,32 @@ def build_word_map(document: Document, sentences: Sequence[Segment]) -> WordMap 
                 for k in range(j2 - j1):
                     owner[j1 + k] = tokens[i1 + k * (i2 - i1) // (j2 - j1)][1]
             # "insert": OCR words that aren't spoken (removed page numbers, headers).
-        by_page[page.number] = _attribute(page.number, page.words, owner)
+        by_page[page.number] = _attribute(page.number, words, owner)
     return WordMap(by_page)
+
+
+def _reading_order(words: Sequence[OcrWord], block_boxes: list[BBox | None]) -> list[OcrWord]:
+    """Put a page's words in the order their blocks are read.
+
+    The pipeline reorders blocks (columns, skipped sidebars), so each word is placed
+    with the block that contains it, in the order the sentences use those blocks.
+    Words outside every read block (removed headers, captions) go last.
+    """
+    ranks: list[BBox] = []
+    for box in block_boxes:
+        if box is not None and box not in ranks:
+            ranks.append(box)
+
+    def rank(word: OcrWord) -> int:
+        cx = (word.bbox[0] + word.bbox[2]) / 2
+        cy = (word.bbox[1] + word.bbox[3]) / 2
+        for i, (x0, y0, x1, y1) in enumerate(ranks):
+            if x0 - 1 <= cx <= x1 + 1 and y0 - 1 <= cy <= y1 + 1:
+                return i
+        return len(ranks)
+
+    order = sorted(range(len(words)), key=lambda i: (rank(words[i]), i))
+    return [words[i] for i in order]
 
 
 def _attribute(page: int, words: Sequence, owner: list[int | None]) -> list[WordBox]:
@@ -178,14 +211,14 @@ def _attribute(page: int, words: Sequence, owner: list[int | None]) -> list[Word
     boxes: list[WordBox] = []
     for i, word in enumerate(words):
         if owner[i] is not None:
-            boxes.append(WordBox(page, word.bbox, owner[i], True))
+            boxes.append(WordBox(page, word.bbox, owner[i], True, word.text))
             continue
         before, after = previous[i], following[i]
         if before is not None and before == after:
             # Inside a sentence (e.g. half of a hyphenated word): highlight it too.
-            boxes.append(WordBox(page, word.bbox, before, True))
+            boxes.append(WordBox(page, word.bbox, before, True, word.text))
         elif before is not None or after is not None:
             sentence = before if before is not None else after
             assert sentence is not None
-            boxes.append(WordBox(page, word.bbox, sentence, False))
+            boxes.append(WordBox(page, word.bbox, sentence, False, word.text))
     return boxes

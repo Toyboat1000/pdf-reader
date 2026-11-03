@@ -441,3 +441,25 @@ def test_open_recent_menu(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> N
     (missing,) = window._recent_menu.actions()
     assert missing.text() == "sample.pdf (not found)"
     assert not missing.isEnabled()
+
+
+def test_pdfs_open_as_page_images_with_copy_and_zoom(
+    qtbot: QtBot, window: MainWindow, tmp_path: Path
+) -> None:
+    open_sample(qtbot, window, tmp_path)
+    assert window._views.currentWidget() is window._page_view  # The default view.
+    window._page_view.select_all()
+    window._copy()
+    assert "Page 0 sentence 0." in QGuiApplication.clipboard().text()
+    window._copy_all()
+    assert QGuiApplication.clipboard().text().startswith("Page 0 sentence 0.")
+
+    window._zoom_by(2.0)
+    assert window._page_view.zoom == pytest.approx(2.0)
+    window._zoom_reset()
+    assert window._page_view.zoom == 1.0
+
+    window._page_images_action.trigger()  # Settings > Show PDFs as Page Images: off.
+    assert window._views.currentWidget() is window._view
+    window._zoom_by(1.5)
+    assert window._view.zoom == pytest.approx(1.5)

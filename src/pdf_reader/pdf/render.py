@@ -27,7 +27,8 @@ class PageRenderer:
     """Keeps a PDF open and renders its pages on request. Not thread-safe."""
 
     def __init__(self, path: Path) -> None:
-        self._pdf = pymupdf.open(path)
+        # Read into memory so the file isn't locked: it can be moved or renamed while open.
+        self._pdf = pymupdf.open(stream=path.read_bytes(), filetype="pdf")
 
     def render(self, page_number: int, zoom: float) -> RenderedPage:
         """Render 1-based ``page_number`` at ``zoom`` pixels per PDF point."""

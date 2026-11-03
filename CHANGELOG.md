@@ -6,15 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed
+## [0.5.0] - 2026-11-02
 
-- Scanned pages: the spoken sentence is now highlighted with one even, rounded pill
-  per line instead of a box per word.
+Page view for every PDF, textbook reading order, copy, zoom, and a polished look.
 
 ### Added
 
-- Scanned pages: hovering over a sentence previews it with soft pills and a
-  "Read from here" badge, showing exactly what a click will start reading.
+- Every PDF now opens as page images by default. Ordinary PDFs use the text stored in
+  the file (fast, exact); only scanned pages use OCR. Settings > Show PDFs as Page
+  Images (Ctrl+Shift+P) switches to the extracted-text view instead.
+- Textbook reading order: the main text is followed and sidebars, margin boxes, figure
+  captions, and labels inside diagrams are skipped (Settings > Skip Sidebars,
+  Captions & Labels). Scanned paragraphs are grouped by position, so interleaved
+  sidebar lines no longer break up the main text.
+- Settings > Read Text in (Parentheses): turn off to skip text in brackets.
+- Copy: drag to select text on page images or in the text view, then Ctrl+C (or
+  right-click > Copy). Copy All Text (Ctrl+Shift+C) and Select All (Ctrl+A).
+- Zoom: Ctrl + mouse wheel, Ctrl+= / Ctrl+- / Ctrl+0, in both views; remembered.
+- Hovering over a sentence on a page previews it with soft pills and a
+  "Read from here" badge.
+- `scripts/make_sample_pdf.py --textbook` builds a scanned textbook-style sample.
+
+### Changed
+
+- The spoken sentence is highlighted with one even, softly rounded pill per line.
+- A more polished look: rounded toolbar buttons, an accent-coloured Play button, a
+  slim speed slider, page shadows, and a cleaner status bar.
+- Open PDFs are read into memory, so the file can be moved or renamed while open.
 
 ## [0.4.0] - 2026-11-02
 

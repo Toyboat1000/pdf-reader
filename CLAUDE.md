@@ -73,6 +73,15 @@ ui  ->  core  ->  audio  ->  tts
   sentences per page (difflib opcodes), giving `ReadingDocument.word_map` for
   highlighting and click-to-read. `ui/page_view.py` paints visible pages rendered by
   `pdf/render.py` (LRU cache) and overlays word boxes. OCR results are not cached.
+- **Page view for all PDFs (v0.5)**: `load_pdf` stores word positions for every
+  page (`get_text("words")` for text pages, OCR for scans; `Page.ocr` marks scans).
+  `word_map._reading_order` orders a page's words by the blocks the sentences use, so
+  alignment survives column reordering and skipped asides. `text/layout.remove_asides`
+  keeps the main text column(s) and drops sidebars, captions, and figure labels;
+  `steps.remove_parentheticals` is optional. Build pipelines with
+  `text.pipeline.build_pipeline(read_parentheses=..., skip_asides=...)`;
+  `ReadingSession.set_pipeline` re-reads the open document. `ui/theme.py` holds the
+  style sheet.
 - **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
   reading position, bookmarks) in `library.json`, thread-safe, written atomically by
   `flush()` (the session flushes on pause, stop, document switch, bookmark changes,

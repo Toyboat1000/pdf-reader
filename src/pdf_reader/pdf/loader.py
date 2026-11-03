@@ -8,7 +8,15 @@ from typing import Any
 import pymupdf
 
 from pdf_reader.pdf.errors import CorruptPdfError, EncryptedPdfError, NoTextError, PdfNotFoundError
-from pdf_reader.pdf.models import BBox, Document, Page, TextBlock, TextLine, TextSpan
+from pdf_reader.pdf.models import (
+    BBox,
+    Document,
+    OcrWord,
+    Page,
+    TextBlock,
+    TextLine,
+    TextSpan,
+)
 from pdf_reader.pdf.ocr import ocr_available, recognize_page
 
 type ProgressCallback = Callable[[int, int], None]
@@ -111,8 +119,20 @@ def _extract_page(page: pymupdf.Page, progress: ProgressCallback | None = None) 
             blocks=ocr_blocks,
             words=words,
             has_images=True,
+            ocr=True,
         )
-    return Page(number=page.number + 1, width=rect.width, height=rect.height, blocks=tuple(blocks))
+    words = tuple(
+        OcrWord(w[4], (float(w[0]), float(w[1]), float(w[2]), float(w[3])))
+        for w in page.get_text("words", flags=_TEXT_FLAGS)
+        if w[4].strip()
+    )
+    return Page(
+        number=page.number + 1,
+        width=rect.width,
+        height=rect.height,
+        blocks=tuple(blocks),
+        words=words,
+    )
 
 
 def _make_line(raw_line: dict[str, Any]) -> TextLine | None:

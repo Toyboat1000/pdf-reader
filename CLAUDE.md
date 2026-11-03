@@ -87,6 +87,16 @@ ui  ->  core  ->  audio  ->  tts
   (`MainWindow._notify`), `ui/welcome_view.py`, `ui/slim_slider.py` (custom-painted
   slider; QSS can't thin the native one). The status bar is hidden but still records
   the last message. Keep controls `NoFocus` so Space and the arrow keys stay global.
+- **Speed and speech (v0.7)**: `pdf/ocr.recognize_pages` OCRs scanned pages in a
+  thread pool (per-thread document + engine, Gray8 bitmaps); `pdf/ocr_cache.OcrCache`
+  stores raw words per file hash (`load_pdf(..., ocr_cache=, file_hash=)`). The page
+  view paints only visible pages (`_visible_pages`, bisect). `tts/kokoro_engine.polish`
+  trims, loudness-normalizes, and fades each sentence; `PlaybackController` adds the
+  pause (sentence / paragraph via `Segment.ends_paragraph` / clause). `tts/speech_text`
+  rewrites shorthand for speech only (display text is unchanged).
+- **Home page (v0.7)**: `ui/home_view.HomeView` (recents grid with covers from
+  `library/thumbnails.save_thumbnail`, made by the session when a PDF opens; progress
+  from `DocumentRecord.page_count/sentence_count`). `MainWindow._home_action` toggles it.
 - **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
   reading position, bookmarks) in `library.json`, thread-safe, written atomically by
   `flush()` (the session flushes on pause, stop, document switch, bookmark changes,

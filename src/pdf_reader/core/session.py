@@ -31,6 +31,7 @@ from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.word_map import build_word_map
 from pdf_reader.library import Anchor, Bookmark, DocumentRecord, LibraryStore
 from pdf_reader.library.anchors import file_id, make_anchor, resolve
+from pdf_reader.library.thumbnails import save_thumbnail
 from pdf_reader.pdf import NoTextError, PdfError, load_pdf
 from pdf_reader.pdf.ocr_cache import OcrCache
 from pdf_reader.text.pipeline import TextPipeline
@@ -131,11 +132,13 @@ class ReadingSession(PlaybackListener):
         pipeline: TextPipeline | None = None,
         library: LibraryStore | None = None,
         ocr_cache: OcrCache | None = None,
+        thumbnail_dir: Path | None = None,
         controller_factory: ControllerFactory = PlaybackController,
     ) -> None:
         self._engine = engine
         self._library = library
         self._ocr_cache = ocr_cache
+        self._thumbnail_dir = thumbnail_dir
         self._listener = listener
         self._pipeline = pipeline or TextPipeline()
         self._lock = threading.RLock()
@@ -300,6 +303,8 @@ class ReadingSession(PlaybackListener):
                     doc_id=file_hash if self._library is not None else None,
                     word_map=build_word_map(document, sentences),
                 )
+                if self._thumbnail_dir is not None and file_hash:
+                    save_thumbnail(path, self.thumbnail_path(file_hash))
             except PdfError as exc:
                 result = exc.user_message
             except Exception as exc:
@@ -383,7 +388,14 @@ class ReadingSession(PlaybackListener):
         """
         if self._library is None or document.doc_id is None:
             return None, []
-        record = self._library.open_document(document.doc_id, document.title, document.path)
+        record = self._library.open_document(
+            document.doc_id,
+            document.title,
+            document.path,
+            page_count=document.page_count,
+            sentence_count=document.sentence_count,
+            scanned=document.pdf is not None and document.pdf.is_scanned,
+        )
         resumed = None
         if record.position is not None:
             index = resolve(record.position, document.sentences)
@@ -582,6 +594,16 @@ class ReadingSession(PlaybackListener):
         target = next((b for b in self.bookmarks() if b.id == bookmark_id), None)
         if target is not None:
             self.seek(target.anchor.index, play=False)
+
+    def thumbnail_path(self, doc_id: str) -> Path:
+        """Return where a document's cover thumbnail is (or would be) stored."""
+        return (self._thumbnail_dir or Path()) / f"{doc_id}.png"
+
+    def forget_document(self, doc_id: str) -> None:
+        """Remove a document from the recent list (and its saved position and bookmarks)."""
+        if self._library is not None:
+            self._library.forget(doc_id)
+            self._library.flush()
 
     def recent_documents(self, limit: int = 10) -> list[DocumentRecord]:
         """Return recently opened documents, most recent first."""

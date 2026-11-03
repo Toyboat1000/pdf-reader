@@ -32,6 +32,7 @@ class Glyph(StrEnum):
     BOOKMARKS = "\ue8a4"
     VOLUME = "\ue767"
     HEADPHONES = "\ue7f6"
+    HOME = "\ue80f"
 
 
 _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
@@ -48,6 +49,7 @@ _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
     Glyph.BOOKMARKS: QStyle.StandardPixmap.SP_FileDialogListView,
     Glyph.VOLUME: QStyle.StandardPixmap.SP_MediaVolume,
     Glyph.HEADPHONES: QStyle.StandardPixmap.SP_MediaVolume,
+    Glyph.HOME: QStyle.StandardPixmap.SP_DirHomeIcon,
 }
 
 

@@ -46,7 +46,16 @@ class LibraryStore:
 
     # ------------------------------------------------------------- documents
 
-    def open_document(self, doc_id: str, title: str, path: Path | None) -> DocumentRecord:
+    def open_document(
+        self,
+        doc_id: str,
+        title: str,
+        path: Path | None,
+        *,
+        page_count: int = 0,
+        sentence_count: int = 0,
+        scanned: bool = False,
+    ) -> DocumentRecord:
         """Record that a document was opened and return a copy of its record."""
         now = _now()
         with self._lock:
@@ -57,6 +66,9 @@ class LibraryStore:
             record.title = title
             record.path = str(path) if path is not None else record.path
             record.last_opened = now
+            record.page_count = page_count or record.page_count
+            record.sentence_count = sentence_count or record.sentence_count
+            record.scanned = scanned or record.scanned
             self._prune()
             self._dirty = True
             return _copy(record)
@@ -196,6 +208,9 @@ def _to_json(record: DocumentRecord) -> dict[str, Any]:
         "title": record.title,
         "path": record.path,
         "last_opened": record.last_opened,
+        "page_count": record.page_count,
+        "sentence_count": record.sentence_count,
+        "scanned": record.scanned,
         "position": _anchor_json(record.position) if record.position else None,
         "bookmarks": [
             {"id": b.id, "label": b.label, "created": b.created, **_anchor_json(b.anchor)}
@@ -220,6 +235,10 @@ def _anchor_from(raw: Any) -> Anchor | None:
     return None
 
 
+def _int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
 def _record_from(doc_id: str, raw: Any) -> DocumentRecord | None:
     if not isinstance(raw, dict):
         return None
@@ -241,6 +260,9 @@ def _record_from(doc_id: str, raw: Any) -> DocumentRecord | None:
         title=title,
         path=path if isinstance(path, str) else None,
         last_opened=last_opened,
+        page_count=_int(raw.get("page_count")),
+        sentence_count=_int(raw.get("sentence_count")),
+        scanned=raw.get("scanned") is True,
         position=_anchor_from(raw.get("position")),
         bookmarks=bookmarks,
     )

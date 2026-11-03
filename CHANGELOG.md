@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-02
+
+A home page, much faster scanned PDFs, and smoother, more natural speech.
+
+### Added
+
+- Home page (Ctrl+H, or the house button): a greeting, "Open a PDF" and "Paste or
+  type text" cards, and "Continue listening" covers made from each document's first
+  page, with reading progress. Click a cover to continue; right-click to remove it.
+- Saved OCR results: a scanned PDF is recognized once; reopening it is instant.
+
+### Changed
+
+- OCR runs on several pages at once, in grayscale: a 60-page scan now opens in about
+  1.7 s instead of 5.8 s (0.3 s when reopened).
+- Page images stay smooth on very long documents (only visible pages are painted;
+  words are indexed by page and sentence).
+- Speech flows more naturally: each sentence's audio is trimmed, evened out in
+  loudness, and faded at the edges so sentences join seamlessly; pauses follow the
+  text (a short breath between sentences, a longer pause after paragraphs and
+  headings); long sentences are spoken in one piece; and shorthand such as "e.g.",
+  "i.e.", "Fig. 3", "pp. 12-14", "&", and dashes is read the way a person would.
+
 ## [0.6.0] - 2026-11-02
 
 A redesigned interface, guided by Apple's design principles.

@@ -9,7 +9,7 @@ It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-s
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.6). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.7). See the [roadmap](ROADMAP.md) for what's next.
 
 ![PDF Reader resuming a two-column document, with bookmarks and the current sentence highlighted](docs/screenshot.png)
 
@@ -22,6 +22,11 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 - **Smart text cleanup.** Page numbers, running headers and footers, and footnotes are
   skipped; two-column pages are read column by column; and sentences that continue
   across a column or page break are read as one sentence.
+- **A home for your reading.** Recent documents appear as covers with your progress,
+  next to one-click "Open a PDF" and a box to paste or type any text.
+- **Natural, flowing speech.** Sentences join seamlessly at an even volume, with
+  natural pauses between sentences and paragraphs, and shorthand like "e.g." or
+  "Fig. 3" is read the way a person would say it.
 - **See the real page.** PDFs open as page images: click any word to start reading
   there, hover to preview, and the spoken sentence is highlighted right on the page.
   Prefer plain text? Settings > Show PDFs as Page Images.
@@ -62,6 +67,7 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 | Space | Play / Pause |
 | Left arrow | Previous sentence |
 | Right arrow | Next sentence |
+| Ctrl+H | Home page |
 | Ctrl+O | Open a PDF |
 | Ctrl+N | New text document (type or paste text) |
 | Ctrl+V | Paste text from the clipboard and read it |
@@ -116,6 +122,7 @@ Python and all dependencies for you.
 | Settings | `%APPDATA%\PDF Reader\settings.json` |
 | Reading positions, bookmarks, recent files | `%APPDATA%\PDF Reader\library.json` |
 | Voice model | `%LOCALAPPDATA%\PDF Reader\models\` |
+| Saved OCR results and covers | `%LOCALAPPDATA%\PDF Reader\ocr-cache\`, `thumbnails\` |
 | Log files | `%LOCALAPPDATA%\PDF Reader\logs\` (also via **Help > Open Log Folder**) |
 
 To uninstall completely, delete the project folder and the two `PDF Reader` folders

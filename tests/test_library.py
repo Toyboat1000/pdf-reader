@@ -246,3 +246,42 @@ def test_flush_failure_is_logged_and_retried(tmp_path: Path) -> None:
     store.open_document("id1", "Doc", None)
     store.flush()  # Must not raise.
     store.save_if_due(interval=0)  # Still dirty, tries again without raising.
+
+
+def test_counts_and_progress_round_trip(store_path: Path) -> None:
+    store = LibraryStore(store_path)
+    store.open_document(
+        "id1", "Doc", Path("C:/a.pdf"), page_count=12, sentence_count=101, scanned=True
+    )
+    store.set_position("id1", Anchor(25, 3, "Text"))
+    store.flush()
+    record = LibraryStore(store_path).get("id1")
+    assert record is not None
+    assert (record.page_count, record.sentence_count, record.scanned) == (12, 101, True)
+    assert record.progress == pytest.approx(0.25)
+
+
+def test_progress_without_position_or_counts(store_path: Path) -> None:
+    store = LibraryStore(store_path)
+    record = store.open_document("id1", "Doc", None)
+    assert record.progress == 0.0
+
+
+def test_thumbnail_is_made_once(tmp_path: Path) -> None:
+    import pymupdf
+
+    from pdf_reader.library.thumbnails import THUMBNAIL_WIDTH, save_thumbnail
+
+    pdf = tmp_path / "doc.pdf"
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 100), "Cover page")
+    doc.save(pdf)
+    doc.close()
+    thumb = tmp_path / "thumbs" / "doc.png"
+    save_thumbnail(pdf, thumb)
+    assert thumb.exists()
+    assert pymupdf.Pixmap(str(thumb)).width == THUMBNAIL_WIDTH
+    stamp = thumb.stat().st_mtime_ns
+    save_thumbnail(pdf, thumb)
+    assert thumb.stat().st_mtime_ns == stamp  # Not redone.
+    save_thumbnail(tmp_path / "missing.pdf", tmp_path / "thumbs" / "x.png")  # No error.

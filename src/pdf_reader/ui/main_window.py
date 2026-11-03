@@ -39,13 +39,13 @@ from pdf_reader.ui.bookmarks_panel import BookmarksPanel
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.document_view import DocumentView
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
+from pdf_reader.ui.home_view import HomeView
 from pdf_reader.ui.icons import Glyph, make_icon
 from pdf_reader.ui.page_view import PageView
 from pdf_reader.ui.player_bar import PlayerBar
 from pdf_reader.ui.resume_banner import ResumeBanner
 from pdf_reader.ui.text_dialog import TextInputDialog
 from pdf_reader.ui.toast import Toast
-from pdf_reader.ui.welcome_view import WelcomeView
 
 log = logging.getLogger(__name__)
 
@@ -89,11 +89,11 @@ class MainWindow(QMainWindow):
         self._view = DocumentView()
         self._page_view = PageView()
         self._views = QStackedWidget()
-        self._welcome = WelcomeView()
+        self._home = HomeView()
         self._views.addWidget(self._view)
         self._views.addWidget(self._page_view)
-        self._views.addWidget(self._welcome)
-        self._views.setCurrentWidget(self._welcome)
+        self._views.addWidget(self._home)
+        self._views.setCurrentWidget(self._home)
         self._ocr_progress: str | None = None
         self._banner = ResumeBanner()
         central = QWidget()
@@ -219,6 +219,13 @@ class MainWindow(QMainWindow):
         self._show_bookmarks_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
         self._show_bookmarks_action.setToolTip("Show or hide your bookmarks (Ctrl+Shift+B)")
 
+        self._home_action = QAction(make_icon(Glyph.HOME, self), "&Home", self)
+        self._home_action.setCheckable(True)
+        self._home_action.setChecked(True)
+        self._home_action.setShortcut(QKeySequence("Ctrl+H"))
+        self._home_action.setToolTip("Home: recent documents and new text (Ctrl+H)")
+        self._home_action.toggled.connect(self._home_toggled)
+
         self._about_action = QAction(f"&About {APP_NAME}", self)
         self._about_action.triggered.connect(self._show_about)
 
@@ -230,6 +237,7 @@ class MainWindow(QMainWindow):
     def _create_menus(self) -> None:
         bar = self.menuBar()
         file_menu = bar.addMenu("&File")
+        file_menu.addAction(self._home_action)
         file_menu.addAction(self._open_action)
         self._recent_menu = file_menu.addMenu("Open &Recent")
         self._recent_menu.setToolTipsVisible(True)
@@ -313,6 +321,7 @@ class MainWindow(QMainWindow):
         toolbar.toggleViewAction().setVisible(False)
         self.addToolBar(toolbar)
 
+        toolbar.addAction(self._home_action)
         toolbar.addAction(self._open_action)
         toolbar.addAction(self._new_text_action)
         toolbar.addAction(self._paste_action)
@@ -403,9 +412,10 @@ class MainWindow(QMainWindow):
         self._page_view.sentence_clicked.connect(lambda index: self._session.seek(index, play=True))
         self._page_view.copy_requested.connect(self._copy)
         self._player.seek_requested.connect(lambda index: self._session.seek(index, play=False))
-        self._welcome.open_requested.connect(self._choose_file)
-        self._welcome.paste_requested.connect(self._paste_action.trigger)
-        self._welcome.new_text_requested.connect(self._new_text_action.trigger)
+        self._home.open_requested.connect(self._choose_file)
+        self._home.open_path_requested.connect(lambda path: self.open_file(Path(path)))
+        self._home.listen_text_requested.connect(self.open_text)
+        self._home.remove_requested.connect(self._forget_document)
         self._page_view.copy_all_requested.connect(self._copy_all)
         self._page_view.zoom_changed.connect(self._on_zoom_changed)
         self._view.zoom_changed.connect(self._on_zoom_changed)
@@ -524,6 +534,9 @@ class MainWindow(QMainWindow):
         self._banner.hide()
         self._view.set_document(document)
         self._ocr_progress = None
+        self._home_action.blockSignals(True)
+        self._home_action.setChecked(False)
+        self._home_action.blockSignals(False)
         if document.word_map is not None:
             self._page_view.set_document(document)
         else:
@@ -607,11 +620,35 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _show_page_images(self, show: bool) -> None:
         self._settings.page_view = show
-        if self._document is None:
-            self._views.setCurrentWidget(self._welcome)
+        if self._document is None or self._home_action.isChecked():
+            self._show_home()
             return
         use_pages = show and self._document.word_map is not None
         self._views.setCurrentWidget(self._page_view if use_pages else self._view)
+
+    @Slot(bool)
+    def _home_toggled(self, show_home: bool) -> None:
+        if show_home or self._document is None:
+            self._show_home()
+        else:
+            self._show_page_images(self._page_images_action.isChecked())
+
+    def _show_home(self) -> None:
+        """Show the home page with up-to-date recent documents."""
+        self._home.set_recents(self._session.recent_documents(limit=24), self._cover_for)
+        self._views.setCurrentWidget(self._home)
+        self._home_action.blockSignals(True)
+        self._home_action.setChecked(True)
+        self._home_action.blockSignals(False)
+
+    def _cover_for(self, doc_id: str) -> Path | None:
+        path = self._session.thumbnail_path(doc_id)
+        return path if path.exists() else None
+
+    @Slot(str)
+    def _forget_document(self, doc_id: str) -> None:
+        self._session.forget_document(doc_id)
+        self._show_home()
 
     @Slot()
     def _reading_options_changed(self) -> None:

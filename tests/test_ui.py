@@ -52,6 +52,7 @@ def make_window(qtbot: QtBot, tmp_path: Path, settings: Settings | None = None) 
         voice="am_adam",
         speed=1.25,
         library=LibraryStore(tmp_path / "library.json"),
+        thumbnail_dir=tmp_path / "thumbs",
         controller_factory=controller_factory,
     )
     settings = settings or Settings(voice="am_adam", speed=1.25)
@@ -463,3 +464,50 @@ def test_pdfs_open_as_page_images_with_copy_and_zoom(
     assert window._views.currentWidget() is window._view
     window._zoom_by(1.5)
     assert window._view.zoom == pytest.approx(1.5)
+
+
+# ----------------------------------------------------------------------- home
+
+
+def test_home_page_lists_recent_documents(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> None:
+    assert window._views.currentWidget() is window._home  # Start on the home page.
+    assert window._home.cards() == []
+    open_sample(qtbot, window, tmp_path)
+    assert window._views.currentWidget() is window._page_view
+    assert not window._home_action.isChecked()
+    window._session.seek(3, play=False)
+
+    window._home_action.trigger()
+    assert window._views.currentWidget() is window._home
+    (card,) = window._home.cards()
+    assert card.record.path == str(tmp_path / "sample.pdf")
+    assert card.record.sentence_count == 6
+    assert window._session.thumbnail_path(card.record.doc_id).exists()  # Cover made.
+    assert "Page 2 of 2" in card._details()
+
+    window._home_action.trigger()  # Back to the document.
+    assert window._views.currentWidget() is window._page_view
+
+
+def test_home_card_opens_and_can_be_removed(
+    qtbot: QtBot, window: MainWindow, tmp_path: Path
+) -> None:
+    open_sample(qtbot, window, tmp_path)
+    window._home_action.trigger()
+    (card,) = window._home.cards()
+    window._home.open_path_requested.emit(card.record.path)
+    qtbot.waitUntil(lambda: window._views.currentWidget() is window._page_view)
+    window._home_action.trigger()
+    window._home.remove_requested.emit(window._home.cards()[0].record.doc_id)
+    assert window._home.cards() == []
+
+
+def test_home_paste_card_reads_text(
+    qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window._home.paste_card.editor.setPlainText("Typed on the home page. Second sentence.")
+    window._home.paste_card._listen.click()
+    qtbot.waitUntil(lambda: window._document is not None)
+    assert window._document is not None
+    assert window._document.sentence_count == 2
+    assert window._views.currentWidget() is window._view  # Text has no page images.

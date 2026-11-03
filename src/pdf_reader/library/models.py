@@ -50,6 +50,9 @@ class DocumentRecord:
         last_opened: ISO 8601 time it was last opened (UTC).
         position: Where reading stopped, if anywhere.
         bookmarks: Bookmarks in the order they were added.
+        page_count: Pages in the document (for showing progress), if known.
+        sentence_count: Spoken sentences (for showing progress), if known.
+        scanned: Whether the document's text came from OCR.
     """
 
     doc_id: str
@@ -58,3 +61,13 @@ class DocumentRecord:
     last_opened: str
     position: Anchor | None = None
     bookmarks: list[Bookmark] = field(default_factory=list)
+    page_count: int = 0
+    sentence_count: int = 0
+    scanned: bool = False
+
+    @property
+    def progress(self) -> float:
+        """Return how far reading has got, from 0.0 to 1.0."""
+        if self.position is None or self.sentence_count <= 1:
+            return 0.0
+        return min(1.0, self.position.index / (self.sentence_count - 1))

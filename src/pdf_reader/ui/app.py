@@ -59,6 +59,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         speed=settings.speed,
         library=LibraryStore(library_file()),
         ocr_cache=OcrCache(local_data_dir() / "ocr-cache"),
+        thumbnail_dir=local_data_dir() / "thumbnails",
         pipeline=build_pipeline(
             read_parentheses=settings.read_parentheses, skip_asides=settings.skip_asides
         ),

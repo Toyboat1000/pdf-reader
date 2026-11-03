@@ -89,11 +89,37 @@ QFrame#resume-banner {
     margin: 10px 16px 0 16px;
 }
 
-/* ---------------------------------------------------------- welcome */
-QWidget#welcome { background: palette(window); }
-QLabel#welcome-title { font-size: 22pt; font-weight: 600; letter-spacing: -0.5px; }
-QLabel#welcome-subtitle { font-size: 10.5pt; color: palette(placeholder-text); }
-QLabel#welcome-hints { font-size: 8.5pt; color: palette(placeholder-text); letter-spacing: 0.3px; }
+/* ---------------------------------------------------------- home */
+QScrollArea#home, QWidget#home-page { background: palette(window); }
+QLabel#home-title { font-size: 26pt; font-weight: 600; letter-spacing: -0.6px; }
+QLabel#home-subtitle { font-size: 10.5pt; color: palette(placeholder-text); }
+QLabel#section-title { font-size: 14pt; font-weight: 600; letter-spacing: -0.2px; }
+QLabel#card-heading { font-size: 12pt; font-weight: 600; }
+QLabel#card-title { font-size: 9.5pt; font-weight: 600; }
+QLabel#card-meta { font-size: 8.5pt; color: palette(placeholder-text); }
+QFrame#drop-card {
+    border: 2px dashed rgba(128, 128, 128, 0.35);
+    border-radius: 18px;
+    background: rgba(128, 128, 128, 0.05);
+}
+QFrame#drop-card:hover {
+    border-color: palette(highlight);
+    background: rgba(128, 128, 128, 0.10);
+}
+QFrame#paste-card {
+    background: palette(base);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    border-radius: 18px;
+}
+QPlainTextEdit#paste-editor {
+    border: none;
+    background: transparent;
+    font-size: 10.5pt;
+}
+QFrame#doc-card { border-radius: 14px; background: transparent; }
+QFrame#doc-card:hover { background: rgba(128, 128, 128, 0.12); }
+
+/* ---------------------------------------------------------- buttons */
 QPushButton#primary-button {
     background: palette(highlight);
     color: palette(highlighted-text);

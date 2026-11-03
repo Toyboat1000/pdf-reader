@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Years are read the way people say them: "1930" is "nineteen thirty", "1905"
+  "nineteen oh five", "1930s" "nineteen thirties", and "2024" "twenty twenty-four"
+  (amounts such as "$1930", "1,930", "1930 kg", or "1930%" are left as numbers).
+
 ## [0.8.0] - 2026-11-03
 
 Word-by-word highlighting, more formats, faster speeds, export, themes, and media keys.

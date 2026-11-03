@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QSize, Qt, QTimer, QUrl, Slot
+from PySide6.QtCore import QByteArray, QEvent, QObject, QSize, Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -14,23 +14,22 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QSlider,
+    QSizePolicy,
     QStackedWidget,
     QToolBar,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from pdf_reader.config.constants import APP_NAME, APP_VERSION, PROJECT_URL
 from pdf_reader.config.paths import logs_dir, models_dir
-from pdf_reader.config.settings import MAX_SPEED, MIN_SPEED, Settings, save_settings
+from pdf_reader.config.settings import Settings, save_settings
 from pdf_reader.core.document import ReadingDocument
 from pdf_reader.core.session import ReadingSession, ReadingState
 from pdf_reader.library import Bookmark
@@ -42,8 +41,11 @@ from pdf_reader.ui.document_view import DocumentView
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
 from pdf_reader.ui.icons import Glyph, make_icon
 from pdf_reader.ui.page_view import PageView
+from pdf_reader.ui.player_bar import PlayerBar
 from pdf_reader.ui.resume_banner import ResumeBanner
 from pdf_reader.ui.text_dialog import TextInputDialog
+from pdf_reader.ui.toast import Toast
+from pdf_reader.ui.welcome_view import WelcomeView
 
 log = logging.getLogger(__name__)
 
@@ -87,8 +89,11 @@ class MainWindow(QMainWindow):
         self._view = DocumentView()
         self._page_view = PageView()
         self._views = QStackedWidget()
+        self._welcome = WelcomeView()
         self._views.addWidget(self._view)
         self._views.addWidget(self._page_view)
+        self._views.addWidget(self._welcome)
+        self._views.setCurrentWidget(self._welcome)
         self._ocr_progress: str | None = None
         self._banner = ResumeBanner()
         central = QWidget()
@@ -299,69 +304,90 @@ class MainWindow(QMainWindow):
         help_menu.addAction(self._about_action)
 
     def _create_toolbar(self) -> None:
-        toolbar = QToolBar("Playback", self)
-        toolbar.setObjectName("playback-toolbar")
+        toolbar = QToolBar("Main", self)
+        toolbar.setObjectName("main-toolbar")
         toolbar.setMovable(False)
-        toolbar.setIconSize(QSize(22, 22))
+        toolbar.setFloatable(False)
+        toolbar.setIconSize(QSize(20, 20))
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        toolbar.toggleViewAction().setVisible(False)
         self.addToolBar(toolbar)
 
         toolbar.addAction(self._open_action)
         toolbar.addAction(self._new_text_action)
         toolbar.addAction(self._paste_action)
-        toolbar.addSeparator()
+        toolbar.addWidget(_spacer())
+
+        # Centre: what's open, and what's happening.
+        self._title_label = QLabel(APP_NAME)
+        self._title_label.setObjectName("title-label")
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state_label = QLabel()
+        self._state_label.setObjectName("subtitle-label")
+        self._page_label = QLabel()
+        self._page_label.setObjectName("subtitle-label")
+        subtitle = QHBoxLayout()
+        subtitle.setSpacing(10)
+        subtitle.addStretch()
+        subtitle.addWidget(self._state_label)
+        subtitle.addWidget(self._page_label)
+        subtitle.addStretch()
+        title_box = QWidget()
+        title_column = QVBoxLayout(title_box)
+        title_column.setContentsMargins(0, 0, 0, 0)
+        title_column.setSpacing(0)
+        title_column.addWidget(self._title_label)
+        title_column.addLayout(subtitle)
+        toolbar.addWidget(title_box)
+
+        toolbar.addWidget(_spacer())
         toolbar.addAction(self._add_bookmark_action)
         toolbar.addAction(self._show_bookmarks_action)
-        toolbar.addSeparator()
-        toolbar.addAction(self._prev_action)
-        toolbar.addAction(self._play_action)
-        toolbar.widgetForAction(self._play_action).setObjectName("play-button")
-        toolbar.addAction(self._stop_action)
-        toolbar.addAction(self._next_action)
-        toolbar.addSeparator()
 
-        toolbar.addWidget(QLabel(" Speed "))
-        self._speed_slider = QSlider(Qt.Orientation.Horizontal)
-        self._speed_slider.setRange(int(MIN_SPEED * 100), int(MAX_SPEED * 100))
-        self._speed_slider.setSingleStep(_SPEED_STEP)
-        self._speed_slider.setPageStep(25)
-        self._speed_slider.setTickInterval(25)
-        self._speed_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._speed_slider.setFixedWidth(150)
-        self._speed_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._speed_slider.setToolTip("Reading speed")
+        # The floating "now playing" capsule over the reading area.
+        self._player = PlayerBar(
+            self.centralWidget(),
+            previous=self._prev_action,
+            play=self._play_action,
+            stop=self._stop_action,
+            following=self._next_action,
+        )
+        self._speed_slider = self._player.speed_slider
+        self._speed_label = self._player.speed_label
+        self._voice_combo = self._player.voice_combo
+        self._preview_button = self._player.preview_button
+        self._sentence_label = self._player.position_label
         self._speed_slider.setValue(round(self._session.speed * 100))
-        toolbar.addWidget(self._speed_slider)
-        self._speed_label = QLabel()
-        self._speed_label.setMinimumWidth(48)
-        self._speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        toolbar.addWidget(self._speed_label)
         self._show_speed(self._speed_slider.value())
-        toolbar.addSeparator()
-
-        toolbar.addWidget(QLabel(" Voice "))
-        self._voice_combo = QComboBox()
-        self._voice_combo.setMinimumWidth(190)
-        self._voice_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._voice_combo.setToolTip("Voice")
-        self._voice_combo.setPlaceholderText("Loading voices...")
-        toolbar.addWidget(self._voice_combo)
-
-        self._preview_button = QToolButton()
-        self._preview_button.setText("Preview")
-        self._preview_button.setToolTip("Hear a short sample of the selected voice")
-        self._preview_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._preview_button.clicked.connect(self._preview_voice)
-        toolbar.addWidget(self._preview_button)
+        self._toast = Toast(self.centralWidget())
+        self.centralWidget().installEventFilter(self)
 
     def _create_status_bar(self) -> None:
-        status = self.statusBar()
-        self._state_label = QLabel()
-        self._page_label = QLabel()
-        self._sentence_label = QLabel()
-        status.addWidget(self._state_label, 1)
-        status.addPermanentWidget(self._page_label)
-        status.addPermanentWidget(self._sentence_label)
+        # Messages appear as toasts; the status bar only keeps the latest message
+        # (used by tests and accessibility tools) and stays hidden.
+        self.statusBar().hide()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Keep the floating capsule and toast placed as the window resizes."""
+        if watched is self.centralWidget() and event.type() == QEvent.Type.Resize:
+            self._place_overlays()
+        return super().eventFilter(watched, event)
+
+    def _place_overlays(self) -> None:
+        area = self.centralWidget()
+        width = min(max(area.width() - 48, 360), 900)
+        self._player.setFixedWidth(width)
+        self._player.adjustSize()
+        self._player.move((area.width() - width) // 2, area.height() - self._player.height() - 18)
+        self._player.raise_()
+        self._toast.bottom_offset = self._player.height() + 30
+        self._toast.reposition()
+
+    def _notify(self, message: str, duration_ms: int = 1800) -> None:
+        """Show a brief message as a toast."""
+        self._toast.show_message(message, duration_ms)
+        self.statusBar().showMessage(message, duration_ms)
 
     def _connect_signals(self) -> None:
         b = self._bridge
@@ -376,6 +402,10 @@ class MainWindow(QMainWindow):
         b.loading_progress.connect(self._on_loading_progress)
         self._page_view.sentence_clicked.connect(lambda index: self._session.seek(index, play=True))
         self._page_view.copy_requested.connect(self._copy)
+        self._player.seek_requested.connect(lambda index: self._session.seek(index, play=False))
+        self._welcome.open_requested.connect(self._choose_file)
+        self._welcome.paste_requested.connect(self._paste_action.trigger)
+        self._welcome.new_text_requested.connect(self._new_text_action.trigger)
         self._page_view.copy_all_requested.connect(self._copy_all)
         self._page_view.zoom_changed.connect(self._on_zoom_changed)
         self._view.zoom_changed.connect(self._on_zoom_changed)
@@ -500,6 +530,8 @@ class MainWindow(QMainWindow):
             self._page_view.clear_document()
         self._show_page_images(self._page_images_action.isChecked())
         self.setWindowTitle(f"{document.display_name} - {APP_NAME}")
+        self._title_label.setText(document.display_name)
+        self._player.set_document_length(document.sentence_count)
         self._view.highlight(self._session.position)
         self._update_controls()
 
@@ -524,9 +556,7 @@ class MainWindow(QMainWindow):
         if bookmark is None:
             return
         if self._bookmarks_panel.isHidden():
-            self.statusBar().showMessage(
-                "Bookmark added. Press Ctrl+Shift+B to see your bookmarks.", 4000
-            )
+            self._notify("Bookmark added \u2014 Ctrl+Shift+B shows your bookmarks", 3000)
 
     @Slot(str)
     def _rename_bookmark(self, bookmark_id: str) -> None:
@@ -577,7 +607,10 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _show_page_images(self, show: bool) -> None:
         self._settings.page_view = show
-        use_pages = show and self._document is not None and self._document.word_map is not None
+        if self._document is None:
+            self._views.setCurrentWidget(self._welcome)
+            return
+        use_pages = show and self._document.word_map is not None
         self._views.setCurrentWidget(self._page_view if use_pages else self._view)
 
     @Slot()
@@ -606,7 +639,7 @@ class MainWindow(QMainWindow):
             text = self._document.sentences[self._session.position].text
         if text:
             QGuiApplication.clipboard().setText(text)
-            self.statusBar().showMessage("Copied to the clipboard.", 2500)
+            self._notify("Copied")
 
     @Slot()
     def _copy_all(self) -> None:
@@ -620,7 +653,7 @@ class MainWindow(QMainWindow):
                 last_block = sentence.block
             paragraphs[-1].append(sentence.text)
         QGuiApplication.clipboard().setText("\n\n".join(" ".join(p) for p in paragraphs))
-        self.statusBar().showMessage("All text copied to the clipboard.", 2500)
+        self._notify("All text copied")
 
     @Slot()
     def _select_all(self) -> None:
@@ -639,7 +672,7 @@ class MainWindow(QMainWindow):
 
     @Slot(float)
     def _on_zoom_changed(self, zoom: float) -> None:
-        self.statusBar().showMessage(f"Zoom {zoom:.0%}", 1500)
+        self._notify(f"Zoom {zoom:.0%}", 1200)
 
     @Slot(int, int)
     def _on_loading_progress(self, done: int, total: int) -> None:
@@ -663,7 +696,7 @@ class MainWindow(QMainWindow):
         self._speed_timer.start()
 
     def _show_speed(self, value: int) -> None:
-        self._speed_label.setText(f"{value / 100:.2f}x")
+        self._player.show_speed(value / 100)
 
     @Slot()
     def _apply_speed(self) -> None:
@@ -740,6 +773,7 @@ class MainWindow(QMainWindow):
             return
         index = self._session.position
         page = document.page_of(index) if 0 <= index < document.sentence_count else 1
+        self._player.set_position(index)
         # Pasted text has no pages, so its status bar shows only the sentence.
         self._page_label.setVisible(document.is_paginated)
         self._page_label.setText(f"Page {page} of {document.page_count}")
@@ -796,3 +830,9 @@ def _first_pdf(urls: list[QUrl]) -> Path | None:
             if path.suffix.lower() == ".pdf":
                 return path
     return None
+
+
+def _spacer() -> QWidget:
+    spacer = QWidget()
+    spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    return spacer

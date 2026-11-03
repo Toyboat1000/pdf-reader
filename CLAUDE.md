@@ -80,8 +80,13 @@ ui  ->  core  ->  audio  ->  tts
   keeps the main text column(s) and drops sidebars, captions, and figure labels;
   `steps.remove_parentheticals` is optional. Build pipelines with
   `text.pipeline.build_pipeline(read_parentheses=..., skip_asides=...)`;
-  `ReadingSession.set_pipeline` re-reads the open document. `ui/theme.py` holds the
-  style sheet.
+  `ReadingSession.set_pipeline` re-reads the open document.
+- **UI design (v0.6)**: `ui/theme.py` (style sheet + font, `apply_theme`),
+  `ui/player_bar.py` (floating capsule bound to the window's actions; owns the speed
+  slider/label, voice combo, preview button, and sentence label), `ui/toast.py`
+  (`MainWindow._notify`), `ui/welcome_view.py`, `ui/slim_slider.py` (custom-painted
+  slider; QSS can't thin the native one). The status bar is hidden but still records
+  the last message. Keep controls `NoFocus` so Space and the arrow keys stay global.
 - **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
   reading position, bookmarks) in `library.json`, thread-safe, written atomically by
   `flush()` (the session flushes on pause, stop, document switch, bookmark changes,

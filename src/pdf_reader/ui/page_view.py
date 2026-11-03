@@ -13,6 +13,7 @@ from PySide6.QtCore import (
     QEvent,
     QPoint,
     QPointF,
+    QPropertyAnimation,
     QRectF,
     Qt,
     QVariantAnimation,
@@ -46,6 +47,7 @@ _MARGIN = 24  # Pixels around the pages.
 _MAX_FIT = 2.0  # Fit-to-width never enlarges beyond this many pixels per point.
 _MAX_RENDER = 4.0  # Never render more pixels per point than this (memory).
 _CACHE_PAGES = 8
+_PLAYER_CLEARANCE = 130  # Room under the last page for the floating player.
 _CLICK_TOLERANCE = 6
 _HOVER_REACH = 14.0  # Points from a word within which the hover preview appears.
 MIN_ZOOM = 0.5
@@ -87,6 +89,9 @@ class PageView(QAbstractScrollArea):
         self._fade.setDuration(140)
         self._fade.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._fade.valueChanged.connect(self._on_fade)
+        self._scroll = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
+        self._scroll.setDuration(320)
+        self._scroll.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     # -------------------------------------------------------------- content
 
@@ -134,9 +139,19 @@ class PageView(QAbstractScrollArea):
                 bottom = self._tops[lines[-1][0] - 1] + lines[-1][1][3] * self._scale
                 bar = self.verticalScrollBar()
                 height = self.viewport().height()
-                if top < bar.value() + height * 0.1 or bottom > bar.value() + height * 0.9:
-                    bar.setValue(int(top - height / 3))
+                visible_bottom = bar.value() + height - _PLAYER_CLEARANCE
+                if top < bar.value() + height * 0.1 or bottom > visible_bottom:
+                    self._glide_to(int(top - height / 3))
         self.viewport().update()
+
+    def _glide_to(self, value: int) -> None:
+        """Scroll smoothly, starting from wherever the view is now (interruptible)."""
+        bar = self.verticalScrollBar()
+        value = max(bar.minimum(), min(bar.maximum(), value))
+        self._scroll.stop()
+        self._scroll.setStartValue(bar.value())
+        self._scroll.setEndValue(value)
+        self._scroll.start()
 
     # ----------------------------------------------------------------- zoom
 
@@ -181,7 +196,8 @@ class PageView(QAbstractScrollArea):
             self._tops.append(y)
             y += h * self._scale + _GAP
         vbar = self.verticalScrollBar()
-        vbar.setRange(0, max(0, int(y + _MARGIN - _GAP - self.viewport().height())))
+        bottom = _MARGIN + _PLAYER_CLEARANCE  # The last page can scroll clear of the player.
+        vbar.setRange(0, max(0, int(y + bottom - _GAP - self.viewport().height())))
         vbar.setPageStep(self.viewport().height())
         vbar.setSingleStep(48)
         content_width = widest * self._scale + 2 * _MARGIN
@@ -271,7 +287,7 @@ class PageView(QAbstractScrollArea):
         pills = []
         for page, band in self._word_map.sentence_lines(sentence):
             rect = self._to_view(page, band)
-            pad_y = rect.height() * 0.14  # Just enough to clear ascenders and descenders.
+            pad_y = rect.height() * 0.10  # Clears ascenders and descenders; lines don't touch.
             pad_x = rect.height() * 0.16
             pills.append(rect.adjusted(-pad_x, -pad_y, pad_x, pad_y))
         return pills

@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-02
+
+A redesigned interface, guided by Apple's design principles.
+
+### Changed
+
+- Playback controls live in a floating "now playing" capsule over the page: a large
+  round Play button, previous/next/stop, a scrubbable progress slider (drag or click
+  to jump through the document), a speed pill with a popover of presets, and the voice
+  picker with a preview button. The page scrolls underneath it.
+- A quieter toolbar: file actions on the left, the document title and status in the
+  centre, bookmarks on the right. Messages appear as brief toasts.
+- A welcome screen when nothing is open, with Open PDF and Paste Text.
+- Windows' modern UI font (Segoe UI Variable), slim custom sliders, smooth
+  interruptible scrolling on page images, tracked uppercase page labels in the text
+  view, and refined bookmarks and resume-banner styling. Works in light and dark mode.
+
 ## [0.5.0] - 2026-11-02
 
 Page view for every PDF, textbook reading order, copy, zoom, and a polished look.

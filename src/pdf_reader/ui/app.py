@@ -18,7 +18,7 @@ from pdf_reader.text.pipeline import build_pipeline
 from pdf_reader.tts.kokoro_engine import KokoroEngine
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.main_window import MainWindow
-from pdf_reader.ui.theme import STYLE_SHEET
+from pdf_reader.ui.theme import apply_theme
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     app = QApplication(args)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    app.setStyleSheet(STYLE_SHEET)
+    apply_theme(app)
 
     settings_path = settings_file()
     settings = load_settings(settings_path)

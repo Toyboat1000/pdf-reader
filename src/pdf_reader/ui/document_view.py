@@ -20,6 +20,9 @@ from PySide6.QtWidgets import QTextEdit, QWidget
 from pdf_reader.core.document import ReadingDocument
 
 _MAX_TEXT_WIDTH = 820
+
+_PLAYER_CLEARANCE = 130
+"""Pixels kept free under the text for the floating player capsule."""
 """Widest reading column in pixels; wider windows get side margins."""
 
 _CLICK_TOLERANCE = 6
@@ -131,6 +134,10 @@ class DocumentView(QTextEdit):
         heading_block.setBottomMargin(8)
         heading_char = QTextCharFormat()
         heading_char.setFontWeight(QFont.Weight.DemiBold)
+        # Small, tracked capitals: a quiet label that never competes with the text.
+        heading_char.setFontCapitalization(QFont.Capitalization.AllUppercase)
+        heading_char.setFontLetterSpacingType(QFont.SpacingType.AbsoluteSpacing)
+        heading_char.setFontLetterSpacing(1.2)
         heading_char.setFontPointSize(round(9 * self._zoom, 1))
         heading_char.setForeground(self.palette().color(QPalette.ColorRole.PlaceholderText))
 
@@ -159,6 +166,10 @@ class DocumentView(QTextEdit):
             self._ends.append(cursor.position())
 
         cursor.endEditBlock()
+        # Room at the end so the last lines can scroll clear of the floating player.
+        frame = text_doc.rootFrame().frameFormat()
+        frame.setBottomMargin(_PLAYER_CLEARANCE)
+        text_doc.rootFrame().setFrameFormat(frame)
         self.verticalScrollBar().setValue(0)
 
     def clear_document(self) -> None:

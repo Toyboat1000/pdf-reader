@@ -81,7 +81,7 @@ def test_voices_and_speed_are_shown(window: MainWindow) -> None:
     assert combo.count() == 2
     assert combo.currentData() == "am_adam"
     assert combo.currentText() == "Adam (US Male)"
-    assert window._speed_label.text() == "1.25x"
+    assert window._speed_label.text() == "1.25\u00d7"
 
 
 def test_open_document_shows_text_and_status(
@@ -148,7 +148,7 @@ def test_keyboard_shortcuts(window: MainWindow) -> None:
 def test_speed_slider_snaps_and_applies(qtbot: QtBot, window: MainWindow) -> None:
     window._speed_slider.setValue(152)
     assert window._speed_slider.value() == 150
-    assert window._speed_label.text() == "1.50x"
+    assert window._speed_label.text() == "1.50\u00d7"
     qtbot.waitUntil(lambda: window._session.speed == 1.5)
 
 

@@ -9,7 +9,7 @@ It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-s
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.5). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.6). See the [roadmap](ROADMAP.md) for what's next.
 
 ![PDF Reader resuming a two-column document, with bookmarks and the current sentence highlighted](docs/screenshot.png)
 

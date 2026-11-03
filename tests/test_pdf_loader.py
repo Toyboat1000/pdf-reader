@@ -76,7 +76,7 @@ def test_pdf_without_text(tmp_path: Path) -> None:
     path = make_pdf(tmp_path / "scan.pdf", [[], []])
     with pytest.raises(NoTextError) as info:
         load_pdf(path)
-    assert "scanned" in info.value.user_message
+    assert "blank" in info.value.user_message
 
 
 def test_whitespace_only_text_counts_as_no_text(tmp_path: Path) -> None:

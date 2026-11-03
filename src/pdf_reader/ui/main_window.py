@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSlider,
+    QStackedWidget,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -39,6 +40,7 @@ from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.document_view import DocumentView
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
 from pdf_reader.ui.icons import Glyph, make_icon
+from pdf_reader.ui.page_view import PageView
 from pdf_reader.ui.resume_banner import ResumeBanner
 from pdf_reader.ui.text_dialog import TextInputDialog
 
@@ -82,13 +84,18 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(QSize(640, 420))
 
         self._view = DocumentView()
+        self._page_view = PageView()
+        self._views = QStackedWidget()
+        self._views.addWidget(self._view)
+        self._views.addWidget(self._page_view)
+        self._ocr_progress: str | None = None
         self._banner = ResumeBanner()
         central = QWidget()
         central_layout = QVBoxLayout(central)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         central_layout.addWidget(self._banner)
-        central_layout.addWidget(self._view, 1)
+        central_layout.addWidget(self._views, 1)
         self.setCentralWidget(central)
         self._bookmarks_panel = BookmarksPanel(self)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._bookmarks_panel)
@@ -235,6 +242,17 @@ class MainWindow(QMainWindow):
         playback.addAction(self._prev_action)
         playback.addAction(self._next_action)
 
+        self._page_images_action = QAction("Show &Page Images", self)
+        self._page_images_action.setCheckable(True)
+        self._page_images_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        self._page_images_action.setToolTip(
+            "Scanned documents: show the page images (click a word to read from there) "
+            "or the recognized text"
+        )
+        self._page_images_action.toggled.connect(self._show_page_images)
+        view_menu = bar.addMenu("&View")
+        view_menu.addAction(self._page_images_action)
+
         bookmarks_menu = bar.addMenu("&Bookmarks")
         bookmarks_menu.addAction(self._add_bookmark_action)
         bookmarks_menu.addAction(self._show_bookmarks_action)
@@ -319,6 +337,8 @@ class MainWindow(QMainWindow):
         b.position_changed.connect(self._on_position_changed)
         b.playback_error.connect(self._on_playback_error)
         b.resumed.connect(self._on_resumed)
+        b.loading_progress.connect(self._on_loading_progress)
+        self._page_view.sentence_clicked.connect(lambda index: self._session.seek(index, play=True))
         b.bookmarks_changed.connect(self._on_bookmarks_changed)
         self._banner.start_over.connect(lambda: self._session.seek(0, play=False))
         panel = self._bookmarks_panel
@@ -433,6 +453,15 @@ class MainWindow(QMainWindow):
         self._doc_loading_name = None
         self._banner.hide()
         self._view.set_document(document)
+        self._ocr_progress = None
+        scanned = document.word_map is not None
+        if scanned:
+            self._page_view.set_document(document)
+        else:
+            self._page_view.clear_document()
+        self._page_images_action.setEnabled(scanned)
+        self._page_images_action.setChecked(scanned)
+        self._show_page_images(scanned)
         self.setWindowTitle(f"{document.display_name} - {APP_NAME}")
         self._view.highlight(self._session.position)
         self._update_controls()
@@ -505,7 +534,18 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _on_position_changed(self, index: int) -> None:
         self._view.highlight(index)
+        self._page_view.highlight(index)
         self._update_position_labels()
+
+    @Slot(bool)
+    def _show_page_images(self, show: bool) -> None:
+        use_pages = show and self._document is not None and self._document.word_map is not None
+        self._views.setCurrentWidget(self._page_view if use_pages else self._view)
+
+    @Slot(int, int)
+    def _on_loading_progress(self, done: int, total: int) -> None:
+        self._ocr_progress = f"Recognizing text in scanned pages (page {done + 1} of {total})..."
+        self._update_controls()
 
     @Slot(str)
     def _on_playback_error(self, message: str) -> None:
@@ -575,6 +615,8 @@ class MainWindow(QMainWindow):
         if state is ReadingState.LOADING:
             if self._model_loading:
                 label = "Loading voice model..."
+            elif self._ocr_progress is not None:
+                label = self._ocr_progress
             elif self._doc_loading_name == "text":
                 label = "Preparing text..."
             elif self._doc_loading_name:
@@ -640,6 +682,7 @@ class MainWindow(QMainWindow):
             self._settings.speed = self._speed_slider.value() / 100
             save_settings(self._settings, self._settings_path)
             self._session.shutdown()
+            self._page_view.clear_document()
         super().closeEvent(event)
 
 

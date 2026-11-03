@@ -28,6 +28,7 @@ from pathlib import Path
 from pdf_reader.audio.playback import PlaybackController, PlaybackListener
 from pdf_reader.config.settings import clamp_speed
 from pdf_reader.core.document import ReadingDocument
+from pdf_reader.core.word_map import build_word_map
 from pdf_reader.library import Anchor, Bookmark, DocumentRecord, LibraryStore
 from pdf_reader.library.anchors import file_id, make_anchor, resolve
 from pdf_reader.pdf import NoTextError, PdfError, load_pdf
@@ -102,6 +103,9 @@ class SessionListener:
 
     def on_playback_error(self, message: str) -> None:
         """Playback stopped because of an error; ``message`` is user-friendly."""
+
+    def on_loading_progress(self, done: int, total: int) -> None:
+        """Scanned pages are being recognized: ``done`` of ``total`` pages so far."""
 
     def on_resumed(self, index: int) -> None:
         """A reopened document continues at sentence ``index`` (where reading stopped)."""
@@ -277,12 +281,15 @@ class ReadingSession(PlaybackListener):
 
         def task() -> None:
             try:
-                document = load_pdf(path)
+                document = load_pdf(path, progress=self._listener.on_loading_progress)
                 sentences = tuple(self._pipeline.process_document(document))
                 if not sentences:
                     raise NoTextError(path)
                 result: ReadingDocument | str = ReadingDocument.from_pdf(
-                    document, sentences, doc_id=self._document_id(path)
+                    document,
+                    sentences,
+                    doc_id=self._document_id(path),
+                    word_map=build_word_map(document, sentences),
                 )
             except PdfError as exc:
                 result = exc.user_message

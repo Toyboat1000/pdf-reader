@@ -34,9 +34,15 @@ to turn cleanup off for unusual documents.
 Pasted text is deliberately not saved to disk, so it has no saved position or
 bookmarks.
 
-## 4. OCR for scanned PDFs
+## 4. OCR for scanned PDFs (MVP done, v0.4.0)
 
-- Recognise text in scanned (image-only) PDFs, locally and offline.
+- Scanned pages are recognized offline with the Windows OCR engine (no download).
+- Scans are shown as page images; clicking a word reads from there, and the spoken
+  sentence is highlighted on the image. Page numbers and headers are removed as for
+  other PDFs.
+
+Possible refinements: cache OCR results so reopening a long scan is instant, OCR
+language choice, bookmarks underlined on page images, and zoom controls.
 
 ## 5. Custom pronunciation dictionary
 

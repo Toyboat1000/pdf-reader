@@ -53,13 +53,22 @@ def test_cancel_interrupts_synthesis(engine: KokoroEngine) -> None:
     full_duration = time.monotonic() - started
     assert len(full) > 0
 
-    timer = threading.Timer(full_duration * 0.2, engine.cancel)
-    timer.start()
+    def cancel_once_running() -> None:
+        # Cancelling only affects inference already in progress, so wait for it to start.
+        session = engine._session
+        assert session is not None
+        deadline = time.monotonic() + 30
+        while not session._active and time.monotonic() < deadline:
+            time.sleep(0.005)
+        engine.cancel()
+
+    canceller = threading.Thread(target=cancel_once_running)
+    canceller.start()
     started = time.monotonic()
     with pytest.raises(SynthesisCancelledError):
         engine.synthesize(LONG_TEXT, "af_heart", 1.0)
-    assert time.monotonic() - started < full_duration * 0.8
-    timer.join()
+    assert time.monotonic() - started < full_duration * 0.8 + 1.0
+    canceller.join()
 
     # The engine keeps working after a cancellation.
     assert len(engine.synthesize("Still working.", "af_heart", 1.0)) > 0

@@ -4,6 +4,7 @@ import bisect
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pdf_reader.core.word_map import WordMap
 from pdf_reader.pdf.models import Document
 from pdf_reader.text.segment import Segment
 
@@ -19,6 +20,8 @@ class ReadingDocument:
         path: The file the document was opened from, if any.
         pdf: The extracted PDF with full layout information, for PDF documents.
         text: The original text, for pasted-text documents.
+        word_map: Word positions on scanned pages, for showing and clicking page
+            images; ``None`` for documents without scanned pages.
         doc_id: Content-based identifier used to remember the reading position and
             bookmarks, or ``None`` if the document is not remembered.
     """
@@ -30,6 +33,7 @@ class ReadingDocument:
     pdf: Document | None = None
     text: str | None = None
     doc_id: str | None = None
+    word_map: WordMap | None = None
     _page_starts: tuple[int, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -43,7 +47,11 @@ class ReadingDocument:
 
     @classmethod
     def from_pdf(
-        cls, pdf: Document, sentences: tuple[Segment, ...], doc_id: str | None = None
+        cls,
+        pdf: Document,
+        sentences: tuple[Segment, ...],
+        doc_id: str | None = None,
+        word_map: WordMap | None = None,
     ) -> "ReadingDocument":
         """Create a reading document for an extracted PDF."""
         return cls(
@@ -53,6 +61,7 @@ class ReadingDocument:
             path=pdf.path,
             pdf=pdf,
             doc_id=doc_id,
+            word_map=word_map,
         )
 
     @classmethod

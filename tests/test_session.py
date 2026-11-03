@@ -275,10 +275,10 @@ def test_later_open_supersedes_earlier(
     second = make_pdf(tmp_path / "second.pdf", [2])
     real_load = session_module.load_pdf
 
-    def slow_load(path: Path) -> Any:
+    def slow_load(path: Path, **kwargs: Any) -> Any:
         if path == first:
             gate.wait(2)
-        return real_load(path)
+        return real_load(path, **kwargs)
 
     monkeypatch.setattr(session_module, "load_pdf", slow_load)
     h.session.open_document(first)

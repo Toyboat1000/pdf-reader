@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-02
+
+Scanned PDFs (roadmap step 4, MVP).
+
+### Added
+
+- Pages without text but with images are recognized with the offline OCR engine
+  built into Windows, with progress shown in the status bar.
+- Scanned documents are shown as page images. Click any word to start reading from
+  its sentence; the spoken sentence is highlighted on the image and kept in view.
+- View > Show Page Images (Ctrl+Shift+P) switches between the images and the
+  recognized text.
+- `scripts/make_sample_pdf.py --scanned` builds a scanned sample.
+
+### Changed
+
+- Blank PDFs now get their own message; the "scanned PDFs aren't supported" message
+  is gone.
+
 ## [0.3.0] - 2026-11-02
 
 Reading position and bookmarks (roadmap step 3).

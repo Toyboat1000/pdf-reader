@@ -4,6 +4,7 @@ Usage::
 
     uv run python scripts/make_sample_pdf.py [output.pdf]            # simple sample
     uv run python scripts/make_sample_pdf.py --layout [output.pdf]   # layout sample
+    uv run python scripts/make_sample_pdf.py --scanned [output.pdf]  # scanned (OCR) sample
 
 The simple sample exercises the text pipeline: paragraphs, abbreviations, quotes,
 numbers, a word hyphenated across a line break, and a very long sentence.
@@ -235,6 +236,22 @@ def build_layout_sample(output: Path) -> None:
     doc.close()
 
 
+def build_scanned_sample(output: Path) -> None:
+    """Write a scanned-looking copy of the simple sample: page images, no text layer."""
+    simple = output.with_suffix(".source.pdf")
+    build(simple)
+    source = pymupdf.open(simple)
+    scanned = pymupdf.open()
+    for page in source:
+        image = page.get_pixmap(dpi=150, colorspace=pymupdf.csGRAY)
+        target = scanned.new_page(width=page.rect.width, height=page.rect.height)
+        target.insert_image(target.rect, stream=image.tobytes("png"))
+    source.close()
+    simple.unlink()
+    scanned.save(output)
+    scanned.close()
+
+
 def main() -> None:
     """Build a sample PDF at the path given on the command line."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -242,8 +259,14 @@ def main() -> None:
     parser.add_argument(
         "--layout", action="store_true", help="build the layout sample (columns, footnotes)"
     )
+    parser.add_argument(
+        "--scanned", action="store_true", help="build a scanned sample (page images only)"
+    )
     args = parser.parse_args()
-    if args.layout:
+    if args.scanned:
+        output = args.output or Path("scanned-sample.pdf")
+        build_scanned_sample(output)
+    elif args.layout:
         output = args.output or Path("layout-sample.pdf")
         build_layout_sample(output)
     else:

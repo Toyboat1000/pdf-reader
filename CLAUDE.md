@@ -67,6 +67,12 @@ ui  ->  core  ->  audio  ->  tts
   with an `epoch` counter (bumped on seek/stop/preview; stale audio discarded and
   in-flight synthesis cancelled) and a `params_version` counter (voice/speed changes;
   regenerated chunks replace queued ones in place, so changes never cause a gap).
+- **OCR (step 4)**: `pdf/ocr.py` uses Windows OCR via the `winrt-*` packages
+  (word-level boxes, no model download). `load_pdf` runs it on pages with images and
+  no text, storing `Page.words`. `core/word_map.py` aligns OCR words with the final
+  sentences per page (difflib opcodes), giving `ReadingDocument.word_map` for
+  highlighting and click-to-read. `ui/page_view.py` paints visible pages rendered by
+  `pdf/render.py` (LRU cache) and overlays word boxes. OCR results are not cached.
 - **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
   reading position, bookmarks) in `library.json`, thread-safe, written atomically by
   `flush()` (the session flushes on pause, stop, document switch, bookmark changes,

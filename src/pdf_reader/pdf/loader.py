@@ -1,6 +1,7 @@
 """Load a PDF with PyMuPDF and extract its text with layout information."""
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,9 @@ import pymupdf
 
 from pdf_reader.pdf.errors import CorruptPdfError, EncryptedPdfError, NoTextError, PdfNotFoundError
 from pdf_reader.pdf.models import BBox, Document, Page, TextBlock, TextLine, TextSpan
+from pdf_reader.pdf.ocr import ocr_available, recognize_page
+
+type ProgressCallback = Callable[[int, int], None]
 
 log = logging.getLogger(__name__)
 
@@ -16,13 +20,17 @@ log = logging.getLogger(__name__)
 _TEXT_FLAGS = pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_MEDIABOX_CLIP
 
 
-def load_pdf(path: Path) -> Document:
+def load_pdf(path: Path, progress: ProgressCallback | None = None) -> Document:
     """Open a PDF and extract all text page by page in reading order.
 
     This is blocking and can take a while for large files; call it off the UI thread.
 
+    Pages without any text but with images (scanned pages) are run through OCR.
+
     Args:
         path: The PDF file to read.
+        progress: Called with ``(pages_done, page_count)`` while scanned pages are
+            being recognized, which can take a moment per page.
 
     Returns:
         The extracted document.
@@ -53,7 +61,7 @@ def load_pdf(path: Path) -> Document:
         if pdf.page_count == 0:
             raise CorruptPdfError(path)
         try:
-            pages = tuple(_extract_page(page) for page in pdf)
+            pages = tuple(_extract_page(page, progress) for page in pdf)
             title = _title(pdf.metadata, path)
         except Exception as exc:
             log.warning("Failed to extract text from %s", path, exc_info=True)
@@ -61,7 +69,8 @@ def load_pdf(path: Path) -> Document:
 
     document = Document(path=path, title=title, pages=pages)
     if not document.has_text:
-        raise NoTextError(path)
+        scanned = any(page.blocks == () and page.has_images for page in pages)
+        raise NoTextError(path, scanned=scanned, ocr_available=ocr_available())
     log.info("Loaded %s: %d pages", path, document.page_count)
     return document
 
@@ -73,7 +82,7 @@ def _title(metadata: dict[str, Any] | None, path: Path) -> str:
     return path.stem
 
 
-def _extract_page(page: pymupdf.Page) -> Page:
+def _extract_page(page: pymupdf.Page, progress: ProgressCallback | None = None) -> Page:
     # sort=True orders blocks top-to-bottom, then left-to-right.
     data = page.get_text("dict", flags=_TEXT_FLAGS, sort=True)
     blocks: list[TextBlock] = []
@@ -86,6 +95,23 @@ def _extract_page(page: pymupdf.Page) -> Page:
         if lines:
             blocks.append(TextBlock(lines=lines, bbox=_bbox(raw_block["bbox"])))
     rect = page.rect
+    if not blocks and page.get_images():
+        if progress is not None:
+            progress(page.number, page.parent.page_count)
+        try:
+            ocr_blocks, words = recognize_page(page)
+        except Exception:
+            log.warning("OCR failed on page %d", page.number + 1, exc_info=True)
+            ocr_blocks, words = (), ()
+        log.info("OCR page %d: %d words", page.number + 1, len(words))
+        return Page(
+            number=page.number + 1,
+            width=rect.width,
+            height=rect.height,
+            blocks=ocr_blocks,
+            words=words,
+            has_images=True,
+        )
     return Page(number=page.number + 1, width=rect.width, height=rect.height, blocks=tuple(blocks))
 
 

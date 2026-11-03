@@ -47,10 +47,21 @@ class CorruptPdfError(PdfError):
 class NoTextError(PdfError):
     """The PDF contains no extractable text, typically a scanned document."""
 
-    def __init__(self, path: Path) -> None:
-        super().__init__(
-            path,
-            "No readable text was found in this PDF. It may be a scanned document "
-            "(pages stored as images). Support for scanned PDFs is planned for a "
-            "future version.",
-        )
+    def __init__(self, path: Path, *, scanned: bool = False, ocr_available: bool = True) -> None:
+        if not scanned:
+            message = "No readable text was found in this PDF. Its pages appear to be blank."
+        elif ocr_available:
+            message = (
+                "No readable text was found in this PDF, even after trying to "
+                "recognize text in its page images. The pages may be blank or the "
+                "scan may be too faint to read."
+            )
+        else:
+            message = (
+                "No readable text was found in this PDF. It looks like a scanned "
+                "document, and reading scanned pages needs the Windows text "
+                "recognition (OCR) feature, which isn't available. Adding a language "
+                "in Windows Settings > Time & language > Language & region usually "
+                "installs it."
+            )
+        super().__init__(path, message)

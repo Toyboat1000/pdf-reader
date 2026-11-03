@@ -64,6 +64,19 @@ class TextBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class OcrWord:
+    """A word recognized on a scanned page.
+
+    Attributes:
+        text: The word as recognized.
+        bbox: Its position on the page.
+    """
+
+    text: str
+    bbox: BBox
+
+
+@dataclass(frozen=True, slots=True)
 class Page:
     """A single page of extracted text.
 
@@ -72,12 +85,22 @@ class Page:
         width: Page width in points.
         height: Page height in points.
         blocks: Text blocks in reading order.
+        words: Recognized words with positions, for scanned (OCR) pages only.
+        has_images: True for pages without text but with images (scans), whether or
+            not text could be recognized.
     """
 
     number: int
     width: float
     height: float
     blocks: tuple[TextBlock, ...]
+    words: tuple[OcrWord, ...] = ()
+    has_images: bool = False
+
+    @property
+    def is_scanned(self) -> bool:
+        """Return whether this page's text came from OCR."""
+        return bool(self.words)
 
     @property
     def text(self) -> str:
@@ -103,6 +126,11 @@ class Document:
     def page_count(self) -> int:
         """Return the number of pages."""
         return len(self.pages)
+
+    @property
+    def is_scanned(self) -> bool:
+        """Return whether any page's text came from OCR."""
+        return any(page.is_scanned for page in self.pages)
 
     @property
     def has_text(self) -> bool:

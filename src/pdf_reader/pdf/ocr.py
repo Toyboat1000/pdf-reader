@@ -1,0 +1,136 @@
+"""Text recognition (OCR) for scanned pages, using the OCR engine built into Windows.
+
+Windows 10 and 11 include an offline OCR engine with word-level positions, so no model
+download is needed. It recognizes the languages installed in Windows (English is
+almost always present). Pages are rendered at :data:`OCR_DPI` and the results are
+converted back to PDF points, so they line up with the page.
+"""
+
+import asyncio
+import logging
+import statistics
+import threading
+from typing import Any
+
+import pymupdf
+
+from pdf_reader.pdf.models import BBox, OcrWord, TextBlock, TextLine
+
+log = logging.getLogger(__name__)
+
+OCR_DPI = 200
+"""Rendering resolution for recognition; 200 dpi reads normal print reliably."""
+
+_engine: Any = None
+_engine_lock = threading.Lock()
+_engine_checked = False
+
+
+def _get_engine() -> Any:
+    """Create the Windows OCR engine once; return None if it is unavailable."""
+    global _engine, _engine_checked
+    with _engine_lock:
+        if not _engine_checked:
+            _engine_checked = True
+            try:
+                from winrt.windows.media.ocr import OcrEngine
+
+                _engine = OcrEngine.try_create_from_user_profile_languages()
+            except Exception:
+                log.warning("Windows OCR is not available", exc_info=True)
+                _engine = None
+            if _engine is not None:
+                log.info("Windows OCR ready (%s)", _engine.recognizer_language.language_tag)
+        return _engine
+
+
+def ocr_available() -> bool:
+    """Return whether scanned pages can be recognized on this computer."""
+    return _get_engine() is not None
+
+
+def recognize_page(page: pymupdf.Page) -> tuple[tuple[TextBlock, ...], tuple[OcrWord, ...]]:
+    """Recognize the text on a page image.
+
+    Args:
+        page: The PDF page; it is rendered internally.
+
+    Returns:
+        Text blocks (lines grouped into paragraphs) and every recognized word, all in
+        PDF points. Both are empty if OCR is unavailable or finds nothing.
+    """
+    engine = _get_engine()
+    if engine is None:
+        return (), ()
+    from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
+    from winrt.windows.media.ocr import OcrEngine
+    from winrt.windows.storage.streams import DataWriter
+
+    zoom = OCR_DPI / 72
+    max_side = OcrEngine.max_image_dimension  # A static property in WinRT.
+    zoom = min(zoom, max_side / max(page.rect.width, page.rect.height, 1))
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=True)
+    writer = DataWriter()
+    writer.write_bytes(bytes(pix.samples))
+    bitmap = SoftwareBitmap.create_copy_from_buffer(
+        writer.detach_buffer(), BitmapPixelFormat.RGBA8, pix.width, pix.height
+    )
+
+    async def run() -> Any:
+        return await engine.recognize_async(bitmap)
+
+    result = asyncio.run(run())
+    lines: list[tuple[str, BBox, list[OcrWord]]] = []
+    for line in result.lines:
+        words = []
+        for word in line.words:
+            r = word.bounding_rect
+            box = (r.x / zoom, r.y / zoom, (r.x + r.width) / zoom, (r.y + r.height) / zoom)
+            words.append(OcrWord(word.text, box))
+        if words:
+            text = " ".join(w.text for w in words)
+            lines.append((text, _union([w.bbox for w in words]), words))
+    blocks = _group_lines(lines)
+    all_words = tuple(w for _, _, words in lines for w in words)
+    return blocks, all_words
+
+
+def _union(boxes: list[BBox]) -> BBox:
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
+def _group_lines(lines: list[tuple[str, BBox, list[OcrWord]]]) -> tuple[TextBlock, ...]:
+    """Group recognized lines into paragraph blocks by spacing, size, and position."""
+    blocks: list[TextBlock] = []
+    current: list[TextLine] = []
+    heights = [b[3] - b[1] for _, b, _ in lines]
+    typical = statistics.median(heights) if heights else 10.0
+    for text, box, _words in lines:
+        height = box[3] - box[1]
+        # Word boxes are about one font size tall; this keeps sizes comparable.
+        line = TextLine(text=text, bbox=box, font_size=round(height, 1))
+        if current:
+            prev = current[-1].bbox
+            prev_height = prev[3] - prev[1]
+            gap = box[1] - prev[3]
+            size_change = max(height, prev_height) / max(min(height, prev_height), 0.1)
+            no_overlap = box[0] > prev[2] or box[2] < prev[0]
+            if (
+                gap > 0.8 * max(prev_height, typical)  # Blank space between lines.
+                or gap < -prev_height  # Jumped back up: another column.
+                or no_overlap  # Side by side: another column.
+                # Heading versus body. Line heights vary with ascenders and
+                # descenders, so only a large change counts.
+                or size_change > 1.6
+            ):
+                blocks.append(TextBlock(tuple(current), _union([ln.bbox for ln in current])))
+                current = []
+        current.append(line)
+    if current:
+        blocks.append(TextBlock(tuple(current), _union([ln.bbox for ln in current])))
+    return tuple(blocks)

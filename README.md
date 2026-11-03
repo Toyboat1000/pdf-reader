@@ -9,7 +9,7 @@ It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-s
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.3). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.4). See the [roadmap](ROADMAP.md) for what's next.
 
 ![PDF Reader resuming a two-column document, with bookmarks and the current sentence highlighted](docs/screenshot.png)
 
@@ -22,6 +22,10 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 - **Smart text cleanup.** Page numbers, running headers and footers, and footnotes are
   skipped; two-column pages are read column by column; and sentences that continue
   across a column or page break are read as one sentence.
+- **Scanned PDFs too.** Pages that are just images (from a scanner or copier) are read
+  with the text recognition (OCR) built into Windows, offline. The pages are shown as
+  images: click any word to start reading there, and the spoken sentence is
+  highlighted on the page. Switch to the recognized text with View > Show Page Images.
 - **Read any text.** Paste text from a web page, email, or anywhere else (Ctrl+V), or
   type it in a new text document (Ctrl+N), and have it read aloud.
 - **Picks up where you left off.** Reopen a PDF and it continues at the sentence where
@@ -41,8 +45,8 @@ your documents never leave your PC. Think of it as a private alternative to Spee
   text) onto the window.
 - **Remembers your preferences.** Voice, speed, window layout, and the last folder you
   opened.
-- **Friendly errors.** Password-protected, damaged, and scanned (image-only) PDFs are
-  explained clearly instead of crashing the app.
+- **Friendly errors.** Password-protected, damaged, and blank PDFs are explained
+  clearly instead of crashing the app.
 
 ### Keyboard shortcuts
 
@@ -57,6 +61,7 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 | Ctrl+E | Edit the current text document |
 | Ctrl+B | Bookmark the current sentence |
 | Ctrl+Shift+B | Show or hide the Bookmarks panel |
+| Ctrl+Shift+P | Scanned PDFs: switch between page images and recognized text |
 
 ## Requirements
 
@@ -113,8 +118,9 @@ above.
   output device in Windows, then press Play again.
 - **The model download fails:** check your internet connection and click **Retry**. If
   you skipped the download, use **Help > Download Voice Model**.
-- **"No readable text was found":** the PDF is probably a scanned document (pages
-  stored as images). Support for scanned PDFs (OCR) is planned.
+- **"No readable text was found" for a scanned PDF:** reading scans uses Windows'
+  built-in text recognition, which needs a Windows display language with OCR support
+  (English is normally included). Check Settings > Time & language > Language & region.
 - **Something else:** open **Help > Open Log Folder** and attach `app.log` to a GitHub
   issue.
 

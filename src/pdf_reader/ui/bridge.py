@@ -29,6 +29,7 @@ class SessionBridge(QObject, SessionListener):
     position_changed = Signal(int)
     playback_error = Signal(str)
     resumed = Signal(int)
+    loading_progress = Signal(int, int)  # pages done, page count
     bookmarks_changed = Signal(list)  # list[Bookmark]
 
     def on_state_changed(self, state: ReadingState) -> None:
@@ -70,6 +71,10 @@ class SessionBridge(QObject, SessionListener):
     def on_playback_error(self, message: str) -> None:
         """Emit :attr:`playback_error`."""
         self.playback_error.emit(message)
+
+    def on_loading_progress(self, done: int, total: int) -> None:
+        """Emit :attr:`loading_progress`."""
+        self.loading_progress.emit(done, total)
 
     def on_resumed(self, index: int) -> None:
         """Emit :attr:`resumed`."""

@@ -132,9 +132,7 @@ def draw_wizard(width: int, height: int) -> QImage:
     p.setFont(font)
     p.setPen(QColor("white"))
     text_top = height * 0.22 + icon_size + height * 0.05
-    p.drawText(
-        QRectF(0, text_top, width, width * 0.16), Qt.AlignmentFlag.AlignHCenter, APP_NAME
-    )
+    p.drawText(QRectF(0, text_top, width, width * 0.16), Qt.AlignmentFlag.AlignHCenter, APP_NAME)
     font.setPixelSize(int(width * 0.06))
     font.setWeight(QFont.Weight.Normal)
     p.setFont(font)

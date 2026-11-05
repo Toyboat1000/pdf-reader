@@ -1,6 +1,6 @@
 [project]
 name = "pdf-reader"
-version = "0.9.0"
+version = "0.10.0"
 description = "Read PDFs, e-books, Word documents, and web pages aloud with natural AI voices, offline."
 readme = "README.md"
 license = "AGPL-3.0-or-later"

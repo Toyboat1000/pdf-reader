@@ -6,6 +6,46 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-05
+
+Tabs, a redesigned home page, and a smoother app all round.
+
+### Added
+
+- Tabs: every document opens in its own tab, next to a pinned Home tab. One tab is
+  the one being listened to (a speaker icon marks it); the player, media keys, and
+  bookmarks act on it. While reading aloud you can browse other tabs without
+  interrupting it ("♪ Title" in the player takes you back, also Ctrl+J). When
+  nothing is playing, the tab on screen is the one the player reads; pressing Play
+  or clicking a sentence on another tab switches listening to it.
+- Tab shortcuts: Ctrl+W closes a tab, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, Ctrl+T
+  or Ctrl+H shows Home. A middle click closes a tab.
+- Files open in tabs come back the next time the app starts (opened when first
+  shown); pasted text and web pages stay private and aren't reopened.
+- Each tab remembers where it was scrolled.
+- Dropping several files opens a tab for each.
+- Opening a file from Explorer while the app is open adds a tab to the open window
+  instead of starting a second copy.
+
+### Changed
+
+- Redesigned home page: the date and a greeting, a composer to paste text or a link
+  and listen at once, three quick starts (open a document, open a link, read the
+  clipboard), and book-style covers that fill their frame (blank page margins are
+  trimmed; documents without a page picture get a typeset cover). Covers lift
+  gently under the pointer.
+- Sharper icons everywhere (drawn at each size instead of shrunk).
+- The player appears once there is something to read, and its information line is
+  shorter: page, percentage, and time left.
+- Switching tabs is faster: only the view on screen (page images or text) is laid
+  out.
+
+### Fixed
+
+- The home page showed no recent documents right after starting the app until you
+  left it and came back.
+- A document that finished loading after its window had closed could crash the app.
+
 ## [0.9.0] - 2026-11-03
 
 An installer: download one file, double-click, and start listening.

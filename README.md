@@ -9,9 +9,11 @@ It uses the [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) neural text-to-s
 model, which runs entirely on your own computer: no cloud, no account, no API keys, and
 your documents never leave your PC. Think of it as a private alternative to Speechify.
 
-> **Status:** early development (v0.9). See the [roadmap](ROADMAP.md) for what's next.
+> **Status:** early development (v0.10). See the [roadmap](ROADMAP.md) for what's next.
 
-![PDF Reader reading a PDF page, with the spoken word highlighted inside the current sentence](docs/screenshot.png)
+![PDF Reader reading a PDF page in a tab, with the spoken word highlighted inside the current sentence](docs/screenshot.png)
+
+![The home page: a composer to paste text or a link, quick starts, and recent documents as covers](docs/home.png)
 
 ## Features
 
@@ -36,6 +38,9 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 - **Smart text cleanup.** Page numbers, running headers and footers, and footnotes are
   skipped; two-column pages are read column by column; and sentences that continue
   across a column or page break are read as one sentence.
+- **Tabs.** Open several documents at once, each in its own tab. Keep listening to one
+  while you browse the others; play or click a sentence in another tab to switch.
+  Your tabs come back the next time you start the app.
 - **A home for your reading.** Recent documents appear as covers with your progress,
   next to one-click "Open a PDF" and a box to paste or type any text.
 - **Natural, flowing speech.** Sentences join seamlessly at an even volume, with
@@ -81,7 +86,10 @@ your documents never leave your PC. Think of it as a private alternative to Spee
 | Space | Play / Pause |
 | Left arrow | Previous sentence |
 | Right arrow | Next sentence |
-| Ctrl+H | Home page |
+| Ctrl+H or Ctrl+T | Home page |
+| Ctrl+W | Close the tab |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous tab |
+| Ctrl+J | Show the tab being read aloud |
 | Ctrl+O | Open a document |
 | Ctrl+L | Open a web link |
 | Ctrl+Shift+S | Export audio (MP3) |

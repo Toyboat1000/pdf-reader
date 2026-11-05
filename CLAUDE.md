@@ -124,6 +124,17 @@ ui  ->  core  ->  audio  ->  tts
   `write_defines.py` (installer constants from the code), `build.ps1`, and
   `make_artwork.py` (icon and wizard pictures). Data files used at run time must be
   listed in the spec's `datas`, or the installed app won't find them.
+- **Tabs (v0.10)**: `ui/tabs.py` (`DocumentTab`, `TabStrip`; the rules are in its
+  docstring). The session reads one document; tabs load others without touching
+  playback via `ReadingSession.prepare_document/prepare_url/prepare_text`
+  (`on_document_prepared(request, path, result)`), and `activate(document, position)`
+  makes one the listening document (`close_document()` when its tab closes).
+  `MainWindow`: `_document` is the listening document, `_listening` its tab,
+  `_shown` the one on screen; only the visible view is filled (`_text_view_document`,
+  `_page_view_document`). Files in tabs are saved in `Settings.open_tabs` and restored
+  lazily. `ui/single_instance.SingleInstance` (QLocalServer, user-only) hands a second
+  launch's file to the running window. `tests/conftest.py` makes message boxes return
+  at once, so no test can hang on a dialog.
 - **library/**: `LibraryStore` keeps per-document records (title, path, last opened,
   reading position, bookmarks) in `library.json`, thread-safe, written atomically by
   `flush()` (the session flushes on pause, stop, document switch, bookmark changes,

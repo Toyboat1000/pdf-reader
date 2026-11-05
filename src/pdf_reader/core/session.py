@@ -121,6 +121,18 @@ class SessionListener:
     def on_bookmarks_changed(self, bookmarks: list[Bookmark]) -> None:
         """The current document's bookmarks changed (or a document was opened)."""
 
+    def on_document_prepared(
+        self, request: int, path: Path | None, result: ReadingDocument | str
+    ) -> None:
+        """A document asked for with ``prepare_*`` is ready, or failed.
+
+        ``result`` is the document or a user-friendly message; ``path`` is the file it
+        came from, if any.
+        """
+
+    def on_prepare_progress(self, request: int, done: int, total: int) -> None:
+        """Scanned pages of a document being prepared are being recognized."""
+
     def on_export_progress(self, done: int, total: int) -> None:
         """Saving audio: ``done`` of ``total`` sentences so far."""
 
@@ -170,6 +182,7 @@ class ReadingSession(PlaybackListener):
         self._model_loading = False
         self._doc_loading = False
         self._doc_request = 0
+        self._prepare_request = 0
         self._download_cancel: threading.Event | None = None
         self._threads: list[threading.Thread] = []
         self._controller = controller_factory(engine, self, voice=voice, speed=self._speed)
@@ -316,29 +329,7 @@ class ReadingSession(PlaybackListener):
         request = self._begin_open()
 
         def task() -> None:
-            path: Path | None = None
-            try:
-                fetched = fetch(address, self._download_dir)
-            except SourceError as exc:
-                result: ReadingDocument | str = exc.user_message
-            except Exception as exc:
-                log.exception("Unexpected error opening %s", address)
-                result = f"Something went wrong while opening this link: {exc}"
-            else:
-                if fetched.file is not None:
-                    path = fetched.file
-                    result = self._load_file(path)
-                else:
-                    assert fetched.article is not None
-                    doc_id = None
-                    if self._library is not None:
-                        doc_id = "web-" + hashlib.sha256(fetched.url.encode()).hexdigest()
-                    result = self._text_document(
-                        fetched.article.text,
-                        title=fetched.article.title,
-                        doc_id=doc_id,
-                        source_url=fetched.url,
-                    )
+            path, result = self._load_url(address, self._listener.on_loading_progress)
             self._finish_open(request, path, result)
 
         self._start_thread("document-load", task)
@@ -366,7 +357,134 @@ class ReadingSession(PlaybackListener):
 
         self._start_thread("document-load", task)
 
-    def _load_file(self, path: Path) -> ReadingDocument | str:
+    # ------------------------------------------------- documents for tabs
+
+    def prepare_document(self, path: Path) -> int:
+        """Load a document file in the background without touching playback.
+
+        For opening documents in tabs: reading goes on while the new one loads.
+        Reports ``on_document_prepared`` with the returned request id; use
+        :meth:`activate` to read it.
+        """
+        request = self._next_prepare()
+
+        def task() -> None:
+            result = self._load_file(path, self._prepare_progress(request))
+            self._listener.on_document_prepared(request, path, result)
+
+        self._start_thread("document-prepare", task)
+        return request
+
+    def prepare_url(self, address: str) -> int:
+        """Like :meth:`prepare_document`, for a web page or online document."""
+        request = self._next_prepare()
+
+        def task() -> None:
+            path, result = self._load_url(address, self._prepare_progress(request))
+            self._listener.on_document_prepared(request, path, result)
+
+        self._start_thread("document-prepare", task)
+        return request
+
+    def prepare_text(
+        self,
+        text: str,
+        *,
+        title: str | None = None,
+        doc_id: str | None = None,
+        source_url: str | None = None,
+    ) -> int:
+        """Like :meth:`prepare_document`, for pasted or typed text."""
+        request = self._next_prepare()
+
+        def task() -> None:
+            result = self._text_document(
+                text, title=title, doc_id=doc_id, source_url=source_url, pasted=True
+            )
+            self._listener.on_document_prepared(request, None, result)
+
+        self._start_thread("document-prepare", task)
+        return request
+
+    def activate(self, document: ReadingDocument, position: int | None = None) -> None:
+        """Make ``document`` the one being read, stopping any current playback.
+
+        Args:
+            document: A document from ``on_document_prepared`` (or one read before).
+            position: Sentence to continue at. ``None`` resumes where reading stopped
+                last time (for remembered documents) and reports ``on_resumed``.
+        """
+        with self._lock:
+            self._doc_request += 1  # Supersedes any open_* still loading.
+            self._doc_loading = False
+            self._controller.stop()
+            self._can_resume = False
+            self._remember_position(flush=True)  # For the document being left.
+            self._document = document
+            self._position = 0
+            self._at_end = False
+            self._controller.set_script(document.sentences)
+            resumed, bookmarks = self._restore(document)
+            if position is not None and document.sentences:
+                self._position = max(0, min(position, document.sentence_count - 1))
+                resumed = None
+            self._settle()
+            position = self._position
+        self._listener.on_document_loaded(document)
+        self._listener.on_position_changed(position)
+        self._listener.on_bookmarks_changed(bookmarks)
+        if resumed is not None:
+            self._listener.on_resumed(resumed)
+
+    def close_document(self) -> None:
+        """Stop reading and put the current document away (its tab was closed)."""
+        with self._lock:
+            if self._document is None:
+                return
+            self._controller.stop()
+            self._can_resume = False
+            self._remember_position(flush=True)
+            self._document = None
+            self._position = 0
+            self._at_end = False
+            self._controller.set_script(())
+            self._settle()
+
+    def _next_prepare(self) -> int:
+        with self._lock:
+            self._prepare_request += 1
+            return self._prepare_request
+
+    def _prepare_progress(self, request: int) -> Callable[[int, int], None]:
+        return lambda done, total: self._listener.on_prepare_progress(request, done, total)
+
+    def _load_url(
+        self, address: str, progress: Callable[[int, int], None]
+    ) -> tuple[Path | None, ReadingDocument | str]:
+        """Fetch a link: returns the downloaded file (if any) and the document or error."""
+        try:
+            fetched = fetch(address, self._download_dir)
+        except SourceError as exc:
+            return None, exc.user_message
+        except Exception as exc:
+            log.exception("Unexpected error opening %s", address)
+            return None, f"Something went wrong while opening this link: {exc}"
+        if fetched.file is not None:
+            return fetched.file, self._load_file(fetched.file, progress)
+        assert fetched.article is not None
+        doc_id = None
+        if self._library is not None:
+            doc_id = "web-" + hashlib.sha256(fetched.url.encode()).hexdigest()
+        return None, self._text_document(
+            fetched.article.text,
+            title=fetched.article.title,
+            doc_id=doc_id,
+            source_url=fetched.url,
+        )
+
+    def _load_file(
+        self, path: Path, progress: Callable[[int, int], None] | None = None
+    ) -> ReadingDocument | str:
         """Read a document file. Returns the document or a user-friendly error."""
         try:
             file_hash = self._document_id(path)
@@ -378,7 +496,7 @@ class ReadingSession(PlaybackListener):
                 )
             document = load_pdf(
                 path,
-                progress=self._listener.on_loading_progress,
+                progress=progress or self._listener.on_loading_progress,
                 ocr_cache=self._ocr_cache,
                 file_hash=file_hash,
             )
@@ -650,12 +768,16 @@ class ReadingSession(PlaybackListener):
             self._can_resume = False
             self._controller.preview(PREVIEW_TEXT, voice_id, self._speed)
 
-    def set_pipeline(self, pipeline: TextPipeline) -> None:
-        """Use different text processing, re-reading the open document with it."""
+    def set_pipeline(self, pipeline: TextPipeline, *, reopen: bool = True) -> None:
+        """Use different text processing, re-reading the open document with it.
+
+        With ``reopen`` False, only documents loaded from now on use it (the caller
+        re-reads its documents itself, as the tabbed window does).
+        """
         with self._lock:
             self._pipeline = pipeline
             document = self._document
-        if document is None:
+        if document is None or not reopen:
             return
         if document.source_url is not None and document.text is not None:
             self.open_text(
@@ -756,10 +878,11 @@ class ReadingSession(PlaybackListener):
         with self._lock:
             return self._export_cancel is not None
 
-    def start_export(self, path: Path) -> bool:
+    def start_export(self, path: Path, document: ReadingDocument | None = None) -> bool:
         """Save the open document's speech to ``path`` (.mp3 or .wav) in the background.
 
-        Uses the current voice and speed. Reports ``on_export_progress``, then
+        Saves ``document`` (default: the one being read) with the current voice and
+        speed. Reports ``on_export_progress``, then
         ``on_export_finished`` or ``on_export_failed``. Reading can go on meanwhile.
 
         Returns:
@@ -767,7 +890,7 @@ class ReadingSession(PlaybackListener):
             is already running.
         """
         with self._lock:
-            document = self._document
+            document = document or self._document
             if document is None or not self._engine.is_loaded or self._export_cancel is not None:
                 return False
             cancel = self._export_cancel = threading.Event()

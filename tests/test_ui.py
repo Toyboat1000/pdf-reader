@@ -89,6 +89,7 @@ def test_open_document_shows_text_and_status(
     qtbot: QtBot, window: MainWindow, tmp_path: Path
 ) -> None:
     open_sample(qtbot, window, tmp_path)
+    window._page_images_action.setChecked(False)  # The text view.
     text = window._view.toPlainText()
     assert "Page 1" in text
     assert "Page 0 sentence 2." in text
@@ -102,6 +103,7 @@ def test_clicking_a_sentence_starts_reading_there(
     qtbot: QtBot, window: MainWindow, tmp_path: Path
 ) -> None:
     open_sample(qtbot, window, tmp_path)
+    window._page_images_action.setChecked(False)  # The text view.
     view = window._view
     cursor = QTextCursor(view.document())
     cursor.setPosition(view._starts[4] + 2)
@@ -115,6 +117,7 @@ def test_clicking_a_sentence_starts_reading_there(
 
 def test_sentence_at_maps_positions(qtbot: QtBot, window: MainWindow, tmp_path: Path) -> None:
     open_sample(qtbot, window, tmp_path)
+    window._page_images_action.setChecked(False)  # The text view.
     view = window._view
     for index in range(6):
         cursor = QTextCursor(view.document())
@@ -329,6 +332,7 @@ def test_add_bookmark_shows_in_panel_and_text(
     qtbot: QtBot, window: MainWindow, tmp_path: Path
 ) -> None:
     open_sample(qtbot, window, tmp_path)
+    window._page_images_action.setChecked(False)  # The text view.
     assert window._add_bookmark_action.isEnabled()
     window._session.seek(2, play=False)
     window._add_bookmark_action.trigger()
@@ -476,7 +480,7 @@ def test_home_page_lists_recent_documents(qtbot: QtBot, window: MainWindow, tmp_
     assert window._home.cards() == []
     open_sample(qtbot, window, tmp_path)
     assert window._views.currentWidget() is window._page_view
-    assert not window._home_action.isChecked()
+    assert window._tab_strip.count() == 2  # Home and the document.
     window._session.seek(3, play=False)
 
     window._home_action.trigger()
@@ -487,7 +491,7 @@ def test_home_page_lists_recent_documents(qtbot: QtBot, window: MainWindow, tmp_
     assert window._session.thumbnail_path(card.record.doc_id).exists()  # Cover made.
     assert "Page 2 of 2" in card._details()
 
-    window._home_action.trigger()  # Back to the document.
+    window._next_tab_action.trigger()  # Back to the document's tab.
     assert window._views.currentWidget() is window._page_view
 
 

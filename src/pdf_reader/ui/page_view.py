@@ -154,10 +154,11 @@ class PageView(QAbstractScrollArea):
 
     def highlight(self, index: int) -> None:
         """Highlight sentence ``index`` and scroll it into view if needed."""
-        if index != self._current:
+        moved = index != self._current
+        if moved:
             self._clear_word()
         self._current = index
-        if self._word_map is not None and self._tops:
+        if moved and self._word_map is not None and self._tops:
             lines = self._word_map.sentence_lines(index)
             if lines:
                 top = self._tops[lines[0][0] - 1] + lines[0][1][1] * self._scale
@@ -168,6 +169,11 @@ class PageView(QAbstractScrollArea):
                 if top < bar.value() + height * 0.1 or bottom > visible_bottom:
                     self._glide_to(int(top - height / 3))
         self.viewport().update()
+
+    def restore_scroll(self, value: int) -> None:
+        """Scroll to ``value`` at once, cancelling any scroll in progress."""
+        self._scroll.stop()
+        self.verticalScrollBar().setValue(value)
 
     def highlight_word(self, sentence: int, word: int) -> None:
         """Mark word ``word`` of the current sentence as the one being spoken.

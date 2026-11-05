@@ -481,7 +481,7 @@ def test_pasting_a_link_opens_it(
     qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[str] = []
-    monkeypatch.setattr(window._session, "open_url", opened.append)
+    monkeypatch.setattr(window._session, "prepare_url", lambda a: opened.append(a) or 0)
     window.open_text("  https://example.com/article  ")
     assert opened == ["https://example.com/article"]
     window._open_location("https://example.com/other")
@@ -513,7 +513,7 @@ def test_open_link_dialog(
     qtbot: QtBot, window: MainWindow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[str] = []
-    monkeypatch.setattr(window._session, "open_url", opened.append)
+    monkeypatch.setattr(window._session, "prepare_url", lambda a: opened.append(a) or 0)
     monkeypatch.setattr(
         "pdf_reader.ui.main_window.QInputDialog.getText",
         lambda *args, **kwargs: ("www.example.com/page", True),

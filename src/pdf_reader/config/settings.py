@@ -6,7 +6,7 @@ defaults field by field, so a bad settings file can never stop the app from star
 
 import json
 import logging
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,8 @@ class Settings:
         theme: One of :data:`THEMES`.
         dyslexic_font: Show text in a dyslexia-friendly font.
         word_highlight: Highlight each word as it is spoken.
+        open_tabs: Files open in tabs when the app was closed (reopened at start).
+        current_tab: Which of ``open_tabs`` was shown (-1: the home page).
     """
 
     voice: str = DEFAULT_VOICE
@@ -60,6 +62,11 @@ class Settings:
     theme: str = "system"
     dyslexic_font: bool = False
     word_highlight: bool = True
+    open_tabs: list[str] = field(default_factory=list)
+    current_tab: int = -1
+
+
+_MAX_TABS = 30
 
 
 def clamp_speed(speed: float) -> float:
@@ -95,6 +102,12 @@ def _validated(raw: dict[str, Any]) -> Settings:
         value = raw.get(name)
         if isinstance(value, int | float) and not isinstance(value, bool):
             setattr(result, name, max(0.5, min(4.0, float(value))))
+    tabs = raw.get("open_tabs")
+    if isinstance(tabs, list):
+        result.open_tabs = [t for t in tabs if isinstance(t, str) and t][:_MAX_TABS]
+    current = raw.get("current_tab")
+    if isinstance(current, int) and not isinstance(current, bool):
+        result.current_tab = current if 0 <= current < len(result.open_tabs) else -1
     known = {f.name for f in fields(Settings)}
     if unknown := set(raw) - known:
         log.debug("Ignoring unknown settings keys: %s", sorted(unknown))

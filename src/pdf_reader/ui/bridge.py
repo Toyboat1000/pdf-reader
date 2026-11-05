@@ -34,6 +34,8 @@ class SessionBridge(QObject, SessionListener):
     export_progress = Signal(int, int)  # sentences done, total
     export_finished = Signal(object)  # Path
     export_failed = Signal(str, bool)  # message, cancelled
+    document_prepared = Signal(int, object, object)  # request, Path or None, document or message
+    prepare_progress = Signal(int, int, int)  # request, pages done, page count
 
     def on_state_changed(self, state: ReadingState) -> None:
         """Emit :attr:`state_changed`."""
@@ -98,3 +100,13 @@ class SessionBridge(QObject, SessionListener):
     def on_export_failed(self, message: str, cancelled: bool) -> None:
         """Emit :attr:`export_failed`."""
         self.export_failed.emit(message, cancelled)
+
+    def on_document_prepared(
+        self, request: int, path: Path | None, result: ReadingDocument | str
+    ) -> None:
+        """Emit :attr:`document_prepared`."""
+        self.document_prepared.emit(request, path, result)
+
+    def on_prepare_progress(self, request: int, done: int, total: int) -> None:
+        """Emit :attr:`prepare_progress`."""
+        self.prepare_progress.emit(request, done, total)

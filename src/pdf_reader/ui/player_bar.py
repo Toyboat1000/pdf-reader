@@ -80,6 +80,9 @@ class PlayerBar(QFrame):
     seek_requested = Signal(int)
     """The user scrubbed to a sentence (emitted on release)."""
 
+    show_listening_requested = Signal()
+    """The user wants to see the tab being listened to."""
+
     def __init__(
         self,
         parent: QWidget,
@@ -132,9 +135,21 @@ class PlayerBar(QFrame):
         slider_row.addWidget(self.elapsed_label)
         slider_row.addWidget(self.progress, 1)
         slider_row.addWidget(self.remaining_label)
+        self.page_label = QLabel()
+        self.page_label.setObjectName("player-meta")
+        # Shown while another tab is being looked at: what is playing, and a way back.
+        self.now_playing = QPushButton()
+        self.now_playing.setObjectName("now-playing")
+        self.now_playing.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.now_playing.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.now_playing.setToolTip("Show the document being read aloud")
+        self.now_playing.clicked.connect(self.show_listening_requested)
+        self.now_playing.hide()
         meta_row = QHBoxLayout()
         meta_row.setSpacing(6)
         meta_row.addStretch()
+        meta_row.addWidget(self.now_playing)
+        meta_row.addWidget(self.page_label)
         meta_row.addWidget(self.position_label)
         meta_row.addWidget(self.progress_label)
         meta_row.addStretch()
@@ -234,6 +249,16 @@ class PlayerBar(QFrame):
         self.speed_label.setText(text)
 
     # ------------------------------------------------------------- progress
+
+    def set_now_playing(self, title: str | None) -> None:
+        """Show which other tab is being read aloud (``None`` hides the chip)."""
+        if title is None:
+            self.now_playing.hide()
+            return
+        short = title if len(title) <= 22 else title[:21].rstrip() + "\u2026"
+        self.now_playing.setText(f"\u266a  {short}")
+        self.now_playing.setToolTip(f"Reading {title} \u2014 click to show it")
+        self.now_playing.show()
 
     def set_times(self, listened: float, total: float) -> None:
         """Show estimated listening time so far and left (``total`` 0 clears them)."""

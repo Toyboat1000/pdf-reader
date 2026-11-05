@@ -20,7 +20,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
@@ -37,7 +36,7 @@ from pdf_reader.audio.export import EXPORT_SUFFIXES
 from pdf_reader.config.constants import APP_NAME, APP_VERSION, PROJECT_URL
 from pdf_reader.config.paths import logs_dir, models_dir
 from pdf_reader.config.settings import Settings, save_settings
-from pdf_reader.core.document import ReadingDocument
+from pdf_reader.core.document import ReadingDocument, text_title
 from pdf_reader.core.session import ReadingSession, ReadingState
 from pdf_reader.library import Bookmark
 from pdf_reader.pdf.formats import PAGED_FORMATS
@@ -51,9 +50,11 @@ from pdf_reader.ui.document_view import DocumentView
 from pdf_reader.ui.download_dialog import ModelDownloadDialog
 from pdf_reader.ui.home_view import HomeView
 from pdf_reader.ui.icons import Glyph, make_icon
+from pdf_reader.ui.loading_view import LoadingView
 from pdf_reader.ui.page_view import PageView
 from pdf_reader.ui.player_bar import PlayerBar
 from pdf_reader.ui.resume_banner import ResumeBanner
+from pdf_reader.ui.tabs import DocumentTab, TabStrip
 from pdf_reader.ui.text_dialog import TextInputDialog
 from pdf_reader.ui.theme import DYSLEXIC_FONT, SEPIA_PAGE_TINT, THEME_LABELS, apply_theme
 from pdf_reader.ui.toast import Toast
@@ -118,7 +119,12 @@ class MainWindow(QMainWindow):
         self._bridge = bridge
         self._settings = settings
         self._settings_path = settings_path
-        self._document: ReadingDocument | None = None
+        self._document: ReadingDocument | None = None  # The one being read aloud.
+        self._tabs: list[DocumentTab] = []
+        self._listening: DocumentTab | None = None
+        self._shown: ReadingDocument | None = None  # The one in the views now.
+        self._text_view_document: ReadingDocument | None = None
+        self._page_view_document: ReadingDocument | None = None
         self._model_loading = False
         self._doc_loading_name: str | None = None
         self._shut_down = False
@@ -135,9 +141,12 @@ class MainWindow(QMainWindow):
         self._page_view = PageView()
         self._views = QStackedWidget()
         self._home = HomeView()
+        self._loading = LoadingView()
         self._views.addWidget(self._view)
         self._views.addWidget(self._page_view)
         self._views.addWidget(self._home)
+        self._views.addWidget(self._loading)
+        self._tab_strip = TabStrip()
         self._views.setCurrentWidget(self._home)
         self._ocr_progress: str | None = None
         self._banner = ResumeBanner()
@@ -172,6 +181,7 @@ class MainWindow(QMainWindow):
 
         self._view.set_font_family(DYSLEXIC_FONT if settings.dyslexic_font else "Segoe UI")
         self._page_view.set_page_tint(SEPIA_PAGE_TINT if settings.theme == "sepia" else None)
+        self._show_tab(None)  # Home, with the recent documents filled in.
         self._update_controls()
 
     # ------------------------------------------------------------- start-up
@@ -179,8 +189,10 @@ class MainWindow(QMainWindow):
     def start(self, initial: Path | str | None = None) -> None:
         """Begin loading the model (downloading it first if needed), then open a document.
 
-        ``initial`` is a file or a web address (from the command line).
+        ``initial`` is a file or a web address (from the command line). Files that
+        were open in tabs last time come back too (opened when first shown).
         """
+        self._restore_tabs()
         if isinstance(initial, Path):
             self.open_file(initial)
         elif initial:
@@ -251,7 +263,7 @@ class MainWindow(QMainWindow):
         self._play_action = QAction(self._play_icon, "&Play", self)
         self._play_action.setShortcut(QKeySequence(Qt.Key.Key_Space))
         self._play_action.setToolTip("Play / Pause (Space)")
-        self._play_action.triggered.connect(self._session.toggle_play_pause)
+        self._play_action.triggered.connect(self._toggle_play)
 
         self._stop_action = QAction(make_icon(Glyph.STOP, self), "&Stop", self)
         self._stop_action.setToolTip("Stop")
@@ -287,16 +299,33 @@ class MainWindow(QMainWindow):
         self._show_bookmarks_action.setToolTip("Show or hide your bookmarks (Ctrl+Shift+B)")
 
         self._home_action = QAction(make_icon(Glyph.HOME, self), "&Home", self)
-        self._home_action.setCheckable(True)
-        self._home_action.setChecked(True)
-        self._home_action.setShortcut(QKeySequence("Ctrl+H"))
+        self._home_action.setShortcuts([QKeySequence("Ctrl+H"), QKeySequence("Ctrl+T")])
         self._home_action.setToolTip("Home: recent documents and new text (Ctrl+H)")
-        self._home_action.toggled.connect(self._home_toggled)
+        self._home_action.triggered.connect(lambda: self._tab_strip.setCurrentIndex(0))
+
+        self._close_tab_action = QAction("&Close Tab", self)
+        self._close_tab_action.setShortcuts([QKeySequence("Ctrl+W"), QKeySequence("Ctrl+F4")])
+        self._close_tab_action.triggered.connect(self._close_current_tab)
+        self._next_tab_action = QAction("Next Ta&b", self)
+        self._next_tab_action.setShortcut(QKeySequence("Ctrl+Tab"))
+        self._next_tab_action.triggered.connect(lambda: self._step_tab(1))
+        self._previous_tab_action = QAction("Previous Tab", self)
+        self._previous_tab_action.setShortcut(QKeySequence("Ctrl+Shift+Tab"))
+        self._previous_tab_action.triggered.connect(lambda: self._step_tab(-1))
+        self._show_listening_action = QAction("Show What's &Playing", self)
+        self._show_listening_action.setShortcut(QKeySequence("Ctrl+J"))
+        self._show_listening_action.triggered.connect(self._show_listening_tab)
 
         self._about_action = QAction(f"&About {APP_NAME}", self)
         self._about_action.triggered.connect(self._show_about)
 
-        for action in (self._play_action, self._prev_action, self._next_action):
+        for action in (
+            self._play_action,
+            self._prev_action,
+            self._next_action,
+            self._next_tab_action,
+            self._previous_tab_action,
+        ):
             # Window-wide, so they work whichever control was clicked last.
             action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
             self.addAction(action)
@@ -317,6 +346,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self._export_action)
         file_menu.addSeparator()
+        file_menu.addAction(self._close_tab_action)
         file_menu.addAction(self._exit_action)
 
         playback = bar.addMenu("&Playback")
@@ -325,6 +355,8 @@ class MainWindow(QMainWindow):
         playback.addSeparator()
         playback.addAction(self._prev_action)
         playback.addAction(self._next_action)
+        playback.addSeparator()
+        playback.addAction(self._show_listening_action)
 
         edit_menu = bar.addMenu("&Edit")
         self._copy_action = edit_menu.addAction("&Copy", self._copy)
@@ -342,6 +374,9 @@ class MainWindow(QMainWindow):
         zoom_out.setShortcuts([QKeySequence("Ctrl+-"), QKeySequence.StandardKey.ZoomOut])
         reset = view_menu.addAction("&Actual Size", self._zoom_reset)
         reset.setShortcut(QKeySequence("Ctrl+0"))
+        view_menu.addSeparator()
+        view_menu.addAction(self._next_tab_action)
+        view_menu.addAction(self._previous_tab_action)
         view_menu.addSeparator()
         theme_menu = view_menu.addMenu("&Theme")
         self._theme_group = QActionGroup(self)
@@ -410,36 +445,19 @@ class MainWindow(QMainWindow):
         toolbar.toggleViewAction().setVisible(False)
         self.addToolBar(toolbar)
 
-        toolbar.addAction(self._home_action)
         toolbar.addAction(self._open_action)
         toolbar.addAction(self._open_link_action)
         toolbar.addAction(self._new_text_action)
         toolbar.addAction(self._paste_action)
-        toolbar.addWidget(_spacer())
+        toolbar.addSeparator()
 
-        # Centre: what's open, and what's happening.
-        self._title_label = QLabel(APP_NAME)
-        self._title_label.setObjectName("title-label")
-        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # The tabs take the middle of the toolbar, like a browser's.
+        self._tab_strip.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(self._tab_strip)
         self._state_label = QLabel()
         self._state_label.setObjectName("subtitle-label")
-        self._page_label = QLabel()
-        self._page_label.setObjectName("subtitle-label")
-        subtitle = QHBoxLayout()
-        subtitle.setSpacing(10)
-        subtitle.addStretch()
-        subtitle.addWidget(self._state_label)
-        subtitle.addWidget(self._page_label)
-        subtitle.addStretch()
-        title_box = QWidget()
-        title_column = QVBoxLayout(title_box)
-        title_column.setContentsMargins(0, 0, 0, 0)
-        title_column.setSpacing(0)
-        title_column.addWidget(self._title_label)
-        title_column.addLayout(subtitle)
-        toolbar.addWidget(title_box)
-
-        toolbar.addWidget(_spacer())
+        toolbar.addWidget(self._state_label)
+        toolbar.addSeparator()
         toolbar.addAction(self._export_action)
         toolbar.addAction(self._add_bookmark_action)
         toolbar.addAction(self._show_bookmarks_action)
@@ -457,6 +475,7 @@ class MainWindow(QMainWindow):
         self._voice_combo = self._player.voice_combo
         self._preview_button = self._player.preview_button
         self._sentence_label = self._player.position_label
+        self._page_label = self._player.page_label
         self._speed_slider.setValue(round(self._session.speed * 100))
         self._show_speed(self._speed_slider.value())
         self._preview_button.clicked.connect(self._preview_voice)
@@ -500,10 +519,17 @@ class MainWindow(QMainWindow):
         b.playback_error.connect(self._on_playback_error)
         b.resumed.connect(self._on_resumed)
         b.loading_progress.connect(self._on_loading_progress)
-        self._page_view.sentence_clicked.connect(lambda index: self._session.seek(index, play=True))
+        self._page_view.sentence_clicked.connect(self._on_sentence_clicked)
+        b.document_prepared.connect(self._on_document_prepared)
+        b.prepare_progress.connect(self._on_prepare_progress)
+        self._tab_strip.currentChanged.connect(self._on_tab_changed)
+        self._tab_strip.close_requested.connect(self.close_tab)
+        self._player.show_listening_requested.connect(self._show_listening_tab)
         self._page_view.copy_requested.connect(self._copy)
         self._player.seek_requested.connect(lambda index: self._session.seek(index, play=False))
         self._home.open_requested.connect(self._choose_file)
+        self._home.open_link_requested.connect(self._ask_for_link)
+        self._home.paste_requested.connect(self._paste)
         self._home.open_path_requested.connect(self._open_location)
         self._home.listen_text_requested.connect(self.open_text)
         self._home.remove_requested.connect(self._forget_document)
@@ -520,7 +546,7 @@ class MainWindow(QMainWindow):
         panel.jump_requested.connect(self._session.go_to_bookmark)
         panel.rename_requested.connect(self._rename_bookmark)
         panel.remove_requested.connect(self._session.remove_bookmark)
-        self._view.sentence_clicked.connect(lambda index: self._session.seek(index, play=True))
+        self._view.sentence_clicked.connect(self._on_sentence_clicked)
         self._speed_slider.valueChanged.connect(self._on_speed_slider)
         self._voice_combo.activated.connect(self._on_voice_chosen)
 
@@ -534,11 +560,16 @@ class MainWindow(QMainWindow):
             self.open_file(Path(path))
 
     def open_url(self, address: str) -> None:
-        """Open a web page or online document in the background."""
+        """Open a web page or online document in a new tab (in the background)."""
         log.info("Opening link %s", address)
-        self._doc_loading_name = "link"
-        self._session.open_url(address)
-        self._update_controls()
+        title = address.split("://", 1)[-1].split("/", 1)[0] or "web page"
+        tab = self._find_tab(address)
+        if tab is not None:
+            self._select(tab)
+            return
+        tab = self._add_tab(DocumentTab(title, location=address))
+        tab.request = self._session.prepare_url(address)
+        self._select(tab)
 
     @Slot(str)
     def _open_location(self, location: str) -> None:
@@ -547,6 +578,16 @@ class MainWindow(QMainWindow):
             self.open_url(location)
         else:
             self.open_file(Path(location))
+
+    @Slot(str)
+    def bring_forward(self, location: str = "") -> None:
+        """Come to the front (another launch of the app asked), opening ``location``."""
+        if self.isMinimized():
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if location:
+            self._open_location(location)
 
     @Slot()
     def _ask_for_link(self) -> None:
@@ -573,22 +614,25 @@ class MainWindow(QMainWindow):
             self._ask_for_text(text)
 
     def open_file(self, path: Path) -> None:
-        """Open ``path`` in the background."""
+        """Open ``path`` in a tab (in the background), or show it if it is already open."""
         log.info("Opening %s", path)
         self._settings.last_folder = str(path.parent)
-        self._doc_loading_name = path.name
-        self._session.open_document(path)
-        self._update_controls()
+        tab = self._find_tab(str(path))
+        if tab is None:
+            tab = self._add_tab(DocumentTab(path.name, location=str(path)))
+        if tab.document is None and tab.request is None:
+            tab.request = self._session.prepare_document(path)
+        self._select(tab)
 
     def open_text(self, text: str) -> None:
-        """Read ``text`` as a document (or open it, if it is a web link), in the background."""
+        """Read ``text`` in a new tab (or open it, if it is a web link), in the background."""
         if is_web_address(text):
             self.open_url(text.strip())
             return
         log.info("Opening pasted text (%d characters)", len(text))
-        self._doc_loading_name = "text"
-        self._session.open_text(text)
-        self._update_controls()
+        tab = self._add_tab(DocumentTab(text_title(text)))
+        tab.request = self._session.prepare_text(text)
+        self._select(tab)
 
     def _ask_for_text(self, initial: str, title: str = "New Text Document") -> None:
         """Show the text dialog; read the text if the user chooses Read Aloud."""
@@ -601,8 +645,18 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _edit_text(self) -> None:
-        if self._document is not None and self._document.text is not None:
-            self._ask_for_text(self._document.text, title="Edit Text")
+        tab = self._current_tab()
+        if tab is None or tab.document is None or tab.document.text is None:
+            return
+        dialog = TextInputDialog(self, text=tab.document.text, title="Edit Text")
+        accepted = dialog.exec() == TextInputDialog.DialogCode.Accepted
+        text = dialog.text()
+        dialog.deleteLater()
+        if accepted and text.strip():
+            # The edited text replaces this tab's document, read from the start.
+            tab.title = text_title(text)
+            tab.position = 0
+            tab.request = self._session.prepare_text(text)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Accept drags that contain a document, a link, or plain text."""
@@ -618,7 +672,12 @@ class MainWindow(QMainWindow):
         target = _first_document(mime.urls())
         if isinstance(target, Path):
             event.acceptProposedAction()
-            self.open_file(target)
+            files = [p for p in _documents(mime.urls()) if isinstance(p, Path)]
+            for path in files:  # Several files: one tab each, the first one shown.
+                self.open_file(path)
+            first = self._find_tab(str(files[0]))
+            if first is not None:
+                self._select(first)
         elif isinstance(target, str):
             event.acceptProposedAction()
             self.open_url(target)
@@ -643,6 +702,7 @@ class MainWindow(QMainWindow):
             if state is not ReadingState.PAUSED:
                 self._clear_word_highlight()
         self._update_media_status(state)
+        self._update_now_playing()
         self._update_controls()
         self._update_times()
 
@@ -676,23 +736,25 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_document_loaded(self, document: ReadingDocument) -> None:
+        """The session now reads ``document``: it's the listening tab's."""
         self._document = document
         self._doc_loading_name = None
-        self._banner.hide()
-        self._view.set_document(document)
         self._ocr_progress = None
-        self._home_action.blockSignals(True)
-        self._home_action.setChecked(False)
-        self._home_action.blockSignals(False)
-        if document.word_map is not None:
-            self._page_view.set_document(document)
-        else:
-            self._page_view.clear_document()
-        self._show_page_images(self._page_images_action.isChecked())
-        self.setWindowTitle(f"{document.display_name} - {APP_NAME}")
-        self._title_label.setText(document.display_name)
+        self._banner.hide()
+        tab = next((t for t in self._tabs if t.document is document), None)
+        if tab is None:  # Opened directly through the session: give it a tab.
+            location = str(document.path) if document.path else document.source_url
+            tab = self._add_tab(DocumentTab(document.display_name, location=location))
+            tab.document = document
+            self._select(tab)
+        previous, self._listening = self._listening, tab
+        for other in (previous, tab):
+            if other is not None:
+                self._tab_strip.update_tab(other, listening=other is self._listening)
         self._player.set_document_length(document.sentence_count)
-        self._view.highlight(self._session.position)
+        if self._current_tab() is tab:
+            self._show_tab(tab)
+        self._update_now_playing()
         self._update_controls()
         self._update_times()
         if self._media is not None:
@@ -705,13 +767,19 @@ class MainWindow(QMainWindow):
         document = self._document
         if document is None or not 0 <= index < document.sentence_count:
             return
+        if self._listening is not None and self._listening.quiet:
+            self._listening.quiet = False  # Only re-read with new settings: no news.
+            return
+        if self._current_tab() is not self._listening:
+            return
         self._banner.show_resumed(document.page_of(index) if document.is_paginated else None)
 
     @Slot(list)
     def _on_bookmarks_changed(self, bookmarks: list[Bookmark]) -> None:
         paginated = self._document is not None and self._document.is_paginated
         self._bookmarks_panel.set_bookmarks(bookmarks, show_pages=paginated)
-        self._view.set_bookmarked({b.anchor.index for b in bookmarks})
+        if self._shown is self._document:
+            self._view.set_bookmarked({b.anchor.index for b in bookmarks})
 
     # ----------------------------------------------------------- bookmarks
 
@@ -773,17 +841,275 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _on_position_changed(self, index: int) -> None:
-        self._view.highlight(index)
-        self._page_view.highlight(index)
+        if self._listening is not None:
+            self._listening.position = index
+        if self._shown is not None and self._shown is self._document:
+            self._view.highlight(index)
+            self._page_view.highlight(index)
         self._update_position_labels()
         self._update_times()
+
+    # ---------------------------------------------------------------- tabs
+
+    def _current_tab(self) -> DocumentTab | None:
+        """Return the tab being looked at, or ``None`` on the home page."""
+        return self._tab_by_key(self._tab_strip.key_at(self._tab_strip.currentIndex()))
+
+    def _tab_by_key(self, key: int) -> DocumentTab | None:
+        return next((t for t in self._tabs if t.key == key), None)
+
+    def _find_tab(self, location: str) -> DocumentTab | None:
+        """Return the open tab for a file or address, if any."""
+        if is_web_address(location):
+            return next((t for t in self._tabs if t.location == location), None)
+        try:
+            wanted = Path(location).resolve()
+        except OSError:
+            return None
+        for tab in self._tabs:
+            if tab.location and not is_web_address(tab.location):
+                try:
+                    if Path(tab.location).resolve() == wanted:
+                        return tab
+                except OSError:
+                    continue
+        return None
+
+    def _add_tab(self, tab: DocumentTab) -> DocumentTab:
+        self._tabs.append(tab)
+        self._tab_strip.add_document_tab(tab)
+        return tab
+
+    def _select(self, tab: DocumentTab) -> None:
+        index = self._tab_strip.index_of(tab.key)
+        if index == self._tab_strip.currentIndex():
+            self._on_tab_changed(index)
+        else:
+            self._tab_strip.setCurrentIndex(index)
+
+    def _step_tab(self, step: int) -> None:
+        count = self._tab_strip.count()
+        self._tab_strip.setCurrentIndex((self._tab_strip.currentIndex() + step) % count)
+
+    @Slot()
+    def _show_listening_tab(self) -> None:
+        if self._listening is not None:
+            self._select(self._listening)
+
+    @Slot(int)
+    def _on_tab_changed(self, index: int) -> None:
+        tab = self._tab_by_key(self._tab_strip.key_at(index))
+        if tab is not None and tab.document is None and tab.request is None:
+            self._load_tab(tab)  # Restored from last time: opened when first shown.
+        if (
+            tab is not None
+            and tab.document is not None
+            and tab is not self._listening
+            and self._session.state is not ReadingState.PLAYING
+        ):
+            # Nothing is being read aloud: the player follows what's on screen.
+            self._activate(tab)
+        self._show_tab(tab)
+        self._update_now_playing()
+        self._update_controls()
+
+    def _load_tab(self, tab: DocumentTab) -> None:
+        """Start loading a tab's document from where it came from."""
+        if tab.location is None:
+            return
+        if is_web_address(tab.location):
+            tab.request = self._session.prepare_url(tab.location)
+        else:
+            tab.request = self._session.prepare_document(Path(tab.location))
+
+    def _activate(self, tab: DocumentTab, position: int | None = None) -> None:
+        """Make ``tab`` the listening tab (its document is what the player reads)."""
+        if tab.document is None:
+            return
+        self._session.activate(tab.document, position if position is not None else tab.position)
+
+    @Slot(int, object, object)
+    def _on_document_prepared(
+        self, request: int, path: Path | None, result: ReadingDocument | str
+    ) -> None:
+        if self._shut_down:
+            return  # Finished after the window closed.
+        tab = next((t for t in self._tabs if t.request == request), None)
+        if tab is None:
+            return  # Its tab was closed meanwhile.
+        tab.request = None
+        tab.progress = None
+        if isinstance(result, str):
+            failed_location = tab.location
+            if tab.document is None:
+                self.close_tab(tab.key)
+            if path is not None:
+                QMessageBox.warning(self, "Can't open this file", f"{path.name}\n\n{result}")
+            elif failed_location and is_web_address(failed_location):
+                QMessageBox.warning(self, "Can't open this link", result)
+            else:
+                QMessageBox.warning(self, "Can't read this text", result)
+            return
+        replacing = tab.document is not None
+        tab.document = result
+        tab.title = result.display_name
+        if result.source_url is not None and tab.location is not None:
+            tab.location = result.source_url
+        self._tab_strip.update_tab(tab, listening=tab is self._listening)
+        if tab is self._listening and replacing:
+            tab.quiet = result.doc_id is not None
+            # Re-read with new settings: continue at the same sentence.
+            self._session.activate(result, None if result.doc_id else tab.position)
+        elif self._current_tab() is tab:
+            self._on_tab_changed(self._tab_strip.currentIndex())
+        self._update_controls()
+
+    @Slot(int, int, int)
+    def _on_prepare_progress(self, request: int, done: int, total: int) -> None:
+        tab = next((t for t in self._tabs if t.request == request), None)
+        if tab is None:
+            return
+        tab.progress = f"Reading scanned pages\u2026 {done} of {total}"
+        if self._current_tab() is tab and tab.document is None:
+            self._loading.show_loading(tab.title, tab.progress)
+            self._loading.set_progress(done, total)
+
+    @Slot(int)
+    def close_tab(self, key: int) -> None:
+        """Close the tab with ``key``; closing the listening tab stops reading."""
+        tab = self._tab_by_key(key)
+        if tab is None:
+            return
+        if tab is self._listening:
+            self._session.close_document()
+            self._listening = None
+            self._document = None
+            self._player.set_document_length(0)
+            self._bookmarks_panel.set_bookmarks([], show_pages=False)
+            if self._media is not None:
+                self._media.set_status(PlaybackStatus.CLOSED)
+        if tab.document is self._text_view_document:
+            self._text_view_document = None
+            self._view.clear_document()
+        if tab.document is self._page_view_document:
+            self._page_view_document = None
+            self._page_view.clear_document()  # Also lets go of the file.
+        if tab.document is self._shown:
+            self._shown = None
+        self._tabs.remove(tab)
+        index = self._tab_strip.index_of(key)
+        if index == self._tab_strip.currentIndex() and index > 0:
+            # Show the tab to the left, as browsers do (the home page if none).
+            self._tab_strip.setCurrentIndex(index - 1)
+        self._tab_strip.removeTab(self._tab_strip.index_of(key))
+        self._update_now_playing()
+        self._update_controls()
+        self._update_times()
+
+    @Slot()
+    def _close_current_tab(self) -> None:
+        tab = self._current_tab()
+        if tab is not None:
+            self.close_tab(tab.key)
+
+    def _show_tab(self, tab: DocumentTab | None) -> None:
+        """Show a tab's document (or the home page, or a loading page)."""
+        shown_view = self._views.currentWidget()
+        if shown_view in (self._view, self._page_view) and self._shown is not None:
+            leaving = next((t for t in self._tabs if t.document is self._shown), None)
+            if leaving is not None and leaving is not tab:
+                leaving.scroll = self._active_view().verticalScrollBar().value()
+        if tab is None:
+            self._home.set_recents(self._session.recent_documents(limit=24), self._cover_for)
+            self._views.setCurrentWidget(self._home)
+            self._banner.hide()
+            self.setWindowTitle(APP_NAME)
+            return
+        self.setWindowTitle(f"{tab.title} - {APP_NAME}")
+        document = tab.document
+        if document is None:
+            self._loading.show_loading(tab.title, tab.progress)
+            self._loading.set_progress(0, 0)
+            self._views.setCurrentWidget(self._loading)
+            return
+        use_pages = self._page_images_action.isChecked() and document.word_map is not None
+        view: PageView | DocumentView = self._page_view if use_pages else self._view
+        new_document = document is not self._shown
+        self._shown = document
+        # Only the view on screen is filled in; the other waits until it's needed
+        # (laying out the text of a long book takes a moment).
+        if view is self._page_view and self._page_view_document is not document:
+            self._page_view_document = document
+            self._page_view.set_document(document)
+        elif view is self._view and self._text_view_document is not document:
+            self._text_view_document = document
+            self._view.set_document(document)
+        self._views.setCurrentWidget(view)
+        listening = tab is self._listening
+        # Only what's being read is highlighted; other tabs are just shown.
+        position = self._session.position if listening else -1
+        view.highlight(position)
+        if listening:
+            self._view.set_bookmarked({b.anchor.index for b in self._session.bookmarks()})
+        else:
+            self._banner.hide()
+        reading = listening and self._session.state is ReadingState.PLAYING
+        if new_document and not reading and tab.scroll is not None:
+            # Back where this tab was left (once the new layout is in place); while it
+            # is being read aloud, the view follows the voice instead.
+            value = tab.scroll
+            QTimer.singleShot(0, lambda: view.restore_scroll(value))
+
+    def _update_now_playing(self) -> None:
+        """Show what's being read when another tab (or home) is on screen."""
+        listening = self._listening
+        reading = self._session.state in (ReadingState.PLAYING, ReadingState.PAUSED)
+        if listening is None or self._current_tab() is listening or not reading:
+            self._player.set_now_playing(None)
+        else:
+            self._player.set_now_playing(listening.title)
+
+    @Slot()
+    def _toggle_play(self) -> None:
+        """Play/Pause; on another tab (with nothing playing), read that tab instead."""
+        if self._session.state is ReadingState.PLAYING:
+            self._session.pause()
+            return
+        tab = self._current_tab()
+        if tab is not None and tab.document is not None and tab is not self._listening:
+            self._activate(tab)
+        self._session.play()
+
+    @Slot(int)
+    def _on_sentence_clicked(self, index: int) -> None:
+        """Read from the clicked sentence, switching listening to this tab if needed."""
+        tab = self._current_tab()
+        if tab is not None and tab is not self._listening and tab.document is not None:
+            self._activate(tab, index)
+        self._session.seek(index, play=True)
+
+    def _restore_tabs(self) -> None:
+        """Bring back the files that were open in tabs when the app was closed."""
+        current = None
+        for i, location in enumerate(self._settings.open_tabs):
+            if is_web_address(location) or not Path(location).is_file():
+                continue
+            tab = self._add_tab(DocumentTab(Path(location).name, location=location))
+            if i == self._settings.current_tab:
+                current = tab
+        if current is not None:
+            self._select(current)
+
+    def _viewed_document(self) -> ReadingDocument | None:
+        tab = self._current_tab()
+        return tab.document if tab is not None else None
 
     # ------------------------------------------------- spoken word and time
 
     @Slot()
     def _on_tick(self) -> None:
         """Follow the spoken word, and refresh the listening times now and then."""
-        if self._word_highlight_action.isChecked():
+        if self._word_highlight_action.isChecked() and self._shown is self._document:
             word = self._session.current_word()
             if word is not None:
                 self._view.highlight_word(*word)
@@ -832,6 +1158,9 @@ class MainWindow(QMainWindow):
         self._play_icon = make_icon(Glyph.PLAY, self)
         self._pause_icon = make_icon(Glyph.PAUSE, self)
         self._preview_button.setIcon(make_icon(Glyph.VOLUME, self))
+        self._tab_strip.refresh_icons()
+        for tab in self._tabs:
+            self._tab_strip.update_tab(tab, listening=tab is self._listening)
         self._update_controls()
 
     def _glyph_actions(self) -> list[tuple[QAction, Glyph]]:
@@ -865,7 +1194,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _export_audio(self) -> None:
-        document = self._document
+        document = self._viewed_document() or self._document
         if document is None:
             return
         if self._session.is_exporting:
@@ -884,7 +1213,7 @@ class MainWindow(QMainWindow):
         path = Path(chosen)
         if path.suffix.lower() not in EXPORT_SUFFIXES:
             path = path.with_name(path.name + ".mp3")
-        if not self._session.start_export(path):
+        if not self._session.start_export(path, document):
             self._notify("Audio can be saved once the voice model is ready")
             return
         dialog = QProgressDialog("Saving audio\u2026", "Cancel", 0, document.sentence_count, self)
@@ -978,26 +1307,18 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _show_page_images(self, show: bool) -> None:
         self._settings.page_view = show
-        if self._document is None or self._home_action.isChecked():
-            self._show_home()
-            return
-        use_pages = show and self._document.word_map is not None
-        self._views.setCurrentWidget(self._page_view if use_pages else self._view)
-
-    @Slot(bool)
-    def _home_toggled(self, show_home: bool) -> None:
-        if show_home or self._document is None:
-            self._show_home()
-        else:
-            self._show_page_images(self._page_images_action.isChecked())
+        if self._page_images_action.isChecked() != show:
+            self._page_images_action.blockSignals(True)
+            self._page_images_action.setChecked(show)
+            self._page_images_action.blockSignals(False)
+        self._show_tab(self._current_tab())
 
     def _show_home(self) -> None:
         """Show the home page with up-to-date recent documents."""
-        self._home.set_recents(self._session.recent_documents(limit=24), self._cover_for)
-        self._views.setCurrentWidget(self._home)
-        self._home_action.blockSignals(True)
-        self._home_action.setChecked(True)
-        self._home_action.blockSignals(False)
+        if self._tab_strip.currentIndex() != 0:
+            self._tab_strip.setCurrentIndex(0)
+        else:
+            self._show_tab(None)
 
     def _cover_for(self, doc_id: str) -> Path | None:
         path = self._session.thumbnail_path(doc_id)
@@ -1006,7 +1327,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _forget_document(self, doc_id: str) -> None:
         self._session.forget_document(doc_id)
-        self._show_home()
+        self._show_tab(None)
 
     @Slot()
     def _reading_options_changed(self) -> None:
@@ -1016,8 +1337,23 @@ class MainWindow(QMainWindow):
             build_pipeline(
                 read_parentheses=self._settings.read_parentheses,
                 skip_asides=self._settings.skip_asides,
-            )
+            ),
+            reopen=False,
         )
+        # Every open document is read again with the new settings.
+        for tab in self._tabs:
+            document = tab.document
+            if document is None:
+                continue
+            if document.path is not None:
+                tab.request = self._session.prepare_document(document.path)
+            elif document.text is not None:
+                tab.request = self._session.prepare_text(
+                    document.text,
+                    title=document.title,
+                    doc_id=document.doc_id,
+                    source_url=document.source_url,
+                )
         self._update_controls()
 
     # ------------------------------------------------------------ copy & zoom
@@ -1029,20 +1365,27 @@ class MainWindow(QMainWindow):
     def _copy(self) -> None:
         view = self._active_view()
         text = view.selected_text()
-        if not text and self._document is not None and self._document.sentences:
-            # Nothing selected: copy the sentence being read.
-            text = self._document.sentences[self._session.position].text
+        document = self._viewed_document()
+        if not text and document is not None and document.sentences:
+            # Nothing selected: copy the sentence being read (or this tab's sentence).
+            tab = self._current_tab()
+            if document is self._document:
+                index = self._session.position
+            else:
+                index = (tab.position or 0) if tab is not None else 0
+            text = document.sentences[min(index, document.sentence_count - 1)].text
         if text:
             QGuiApplication.clipboard().setText(text)
             self._notify("Copied")
 
     @Slot()
     def _copy_all(self) -> None:
-        if self._document is None:
+        document = self._viewed_document()
+        if document is None:
             return
         paragraphs: list[list[str]] = []
         last_block = None
-        for sentence in self._document.sentences:
+        for sentence in document.sentences:
             if sentence.block != last_block or not paragraphs:
                 paragraphs.append([])
                 last_block = sentence.block
@@ -1071,7 +1414,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int)
     def _on_loading_progress(self, done: int, total: int) -> None:
-        self._ocr_progress = f"Reading scanned pages… {done} of {total}"
+        self._ocr_progress = f"Reading scanned pages\u2026 {done} of {total}"
         self._update_controls()
 
     @Slot(str)
@@ -1119,7 +1462,10 @@ class MainWindow(QMainWindow):
         state = self._session.state
         model_ready = self._session.is_model_loaded
         has_doc = self._document is not None
-        can_read = model_ready and has_doc and state is not ReadingState.LOADING
+        viewed = self._viewed_document()
+        can_read = (
+            model_ready and (has_doc or viewed is not None) and state is not ReadingState.LOADING
+        )
         playing = state is ReadingState.PLAYING
 
         self._play_action.setEnabled(can_read)
@@ -1130,16 +1476,21 @@ class MainWindow(QMainWindow):
         self._add_bookmark_action.setEnabled(can_bookmark)
         self._bookmarks_panel.set_can_add(can_bookmark)
         self._edit_text_action.setEnabled(
-            self._document is not None
-            and self._document.text is not None
+            viewed is not None
+            and viewed.text is not None
+            and viewed.source_url is None
+            and viewed.path is None
             and state is not ReadingState.LOADING
         )
         self._export_action.setEnabled(
             model_ready
-            and has_doc
+            and viewed is not None
             and state is not ReadingState.LOADING
             and not self._session.is_exporting
         )
+        self._close_tab_action.setEnabled(self._current_tab() is not None)
+        # The player appears once there is something to listen to.
+        self._player.setVisible(has_doc or viewed is not None)
         self._prev_action.setEnabled(has_doc and state is not ReadingState.LOADING)
         self._next_action.setEnabled(has_doc and state is not ReadingState.LOADING)
         self._voice_combo.setEnabled(model_ready)
@@ -1161,10 +1512,8 @@ class MainWindow(QMainWindow):
                 label = _STATE_LABELS[state]
         elif state is ReadingState.IDLE and not model_ready:
             label = "Voice model not installed. Use Help > Download Voice Model."
-        elif state is ReadingState.READY and not has_doc:
-            label = "Ready. Open a document to start."
         else:
-            label = _STATE_LABELS[state]
+            label = ""  # The play button and the tabs already say what's going on.
         self._state_label.setText(label)
         self._update_position_labels()
 
@@ -1178,9 +1527,10 @@ class MainWindow(QMainWindow):
         index = self._session.position
         page = document.page_of(index) if 0 <= index < document.sentence_count else 1
         self._player.set_position(index)
-        # Pasted text has no pages, so its status bar shows only the sentence.
+        # Pages where there are pages; sentences for text, which has none.
         self._page_label.setVisible(document.is_paginated)
         self._page_label.setText(f"Page {page} of {document.page_count}")
+        self._sentence_label.setVisible(not document.is_paginated)
         self._sentence_label.setText(f"Sentence {index + 1} of {document.sentence_count}")
 
     def _show_about(self) -> None:
@@ -1222,6 +1572,11 @@ class MainWindow(QMainWindow):
             self._settings.page_zoom = self._page_view.zoom
             self._settings.text_zoom = self._view.zoom
             self._settings.speed = self._speed_slider.value() / 100
+            # Files open in tabs come back next time (pasted text and web pages don't).
+            files = [t for t in self._tabs if t.location and not is_web_address(t.location)]
+            self._settings.open_tabs = [t.location for t in files if t.location]
+            current = self._current_tab()
+            self._settings.current_tab = files.index(current) if current in files else -1
             self._word_timer.stop()
             save_settings(self._settings, self._settings_path)
             self._session.shutdown()
@@ -1241,6 +1596,16 @@ def _first_document(urls: list[QUrl]) -> Path | str | None:
         elif url.scheme() in ("http", "https"):
             return url.toString()
     return None
+
+
+def _documents(urls: list[QUrl]) -> list[Path | str]:
+    """Return every dropped document file (a Path) and web link (a str), in order."""
+    found: list[Path | str] = []
+    for url in urls:
+        target = _first_document([url])
+        if target is not None:
+            found.append(target)
+    return found
 
 
 def _safe_file_name(title: str) -> str:

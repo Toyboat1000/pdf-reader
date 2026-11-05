@@ -22,10 +22,12 @@ from pdf_reader.config.settings import load_settings
 from pdf_reader.core.session import ReadingSession
 from pdf_reader.library import LibraryStore
 from pdf_reader.pdf.ocr_cache import OcrCache
+from pdf_reader.sources import is_web_address
 from pdf_reader.text.pipeline import build_pipeline
 from pdf_reader.tts.kokoro_engine import KokoroEngine
 from pdf_reader.ui.bridge import SessionBridge
 from pdf_reader.ui.main_window import MainWindow
+from pdf_reader.ui.single_instance import SingleInstance
 from pdf_reader.ui.theme import apply_theme, load_bundled_fonts
 
 log = logging.getLogger(__name__)
@@ -53,6 +55,15 @@ def run(argv: Sequence[str] | None = None) -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     app.setWindowIcon(QIcon(str(APP_ICON)))
+
+    initial = args[1] if len(args) > 1 else None
+    if initial and not is_web_address(initial):
+        initial = str(Path(initial).resolve())  # The running copy has another folder.
+    instance = SingleInstance()
+    if instance.send_to_running(initial or ""):
+        log.info("Already running: handed over to that copy")
+        return 0
+    instance.listen()
     load_bundled_fonts()
 
     settings_path = settings_file()
@@ -74,8 +85,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     )
     window = MainWindow(session, bridge, settings, settings_path, media_controls=True)
     window.show()
+    instance.message_received.connect(window.bring_forward)
 
-    initial = args[1] if len(args) > 1 else None
     # Start after the event loop is running so the window paints first.
     QTimer.singleShot(0, lambda: window.start(initial))
     code = app.exec()

@@ -221,11 +221,18 @@ class DocumentView(QTextEdit):
             self._word = None
             self._refresh_marks()
             return
-        if index != self._current:
+        moved = index != self._current
+        if moved:
             self._word = None
         self._current = index
         self._refresh_marks()
-        self._scroll_to(index)
+        if moved:  # The same sentence again keeps the reader's scroll position.
+            self._scroll_to(index)
+
+    def restore_scroll(self, value: int) -> None:
+        """Scroll to ``value`` at once, cancelling any scroll in progress."""
+        self._scroll_animation.stop()
+        self.verticalScrollBar().setValue(value)
 
     def highlight_word(self, sentence: int, word: int) -> None:
         """Mark word ``word`` (in ``text.split()``) of the current sentence as spoken.

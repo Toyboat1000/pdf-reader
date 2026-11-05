@@ -13,7 +13,8 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPalett
 from PySide6.QtWidgets import QStyle, QWidget
 
 _ICON_FONTS = ("Segoe Fluent Icons", "Segoe MDL2 Assets")
-_PIXMAP_SIZE = 64  # Drawn large and scaled down, so it stays crisp on high-DPI screens.
+_PIXMAP_SIZE = 64  # The largest size icons are drawn at (sharp on high-DPI screens).
+_SIZES = (12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64)
 
 
 class Glyph(StrEnum):
@@ -35,6 +36,8 @@ class Glyph(StrEnum):
     HOME = "\ue80f"
     LINK = "\ue71b"
     SAVE = "\ue74e"
+    CLOSE = "\ue711"
+    SEARCH = "\ue721"
 
 
 _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
@@ -54,6 +57,8 @@ _FALLBACKS: dict[Glyph, QStyle.StandardPixmap] = {
     Glyph.HOME: QStyle.StandardPixmap.SP_DirHomeIcon,
     Glyph.LINK: QStyle.StandardPixmap.SP_DriveNetIcon,
     Glyph.SAVE: QStyle.StandardPixmap.SP_DialogSaveButton,
+    Glyph.CLOSE: QStyle.StandardPixmap.SP_TitleBarCloseButton,
+    Glyph.SEARCH: QStyle.StandardPixmap.SP_FileDialogContentsView,
 }
 
 
@@ -74,22 +79,36 @@ def make_icon(glyph: Glyph, widget: QWidget) -> QIcon:
         (QIcon.Mode.Disabled, QPalette.ColorGroup.Disabled),
     ):
         color = palette.color(group, QPalette.ColorRole.WindowText)
-        icon.addPixmap(_render(glyph, family, color), mode)
+        # Drawn at each common size: thin strokes would vanish if one large picture
+        # were shrunk, and the font's hinting keeps every size crisp.
+        for size in _SIZES:
+            icon.addPixmap(_render(glyph, family, color, size), mode)
     return icon
 
 
-def _render(glyph: Glyph, family: str, color: QColor) -> QPixmap:
-    pixmap = QPixmap(_PIXMAP_SIZE, _PIXMAP_SIZE)
+def _render(glyph: Glyph, family: str, color: QColor, size: int = _PIXMAP_SIZE) -> QPixmap:
+    pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     font = QFont(family)
-    font.setPixelSize(int(_PIXMAP_SIZE * 0.75))
+    font.setPixelSize(max(1, round(size * 0.75)))
     painter.setFont(font)
     painter.setPen(color)
-    painter.drawText(
-        QRectF(0, 0, _PIXMAP_SIZE, _PIXMAP_SIZE), Qt.AlignmentFlag.AlignCenter, glyph.value
-    )
+    painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, glyph.value)
     painter.end()
+    return pixmap
+
+
+def glyph_pixmap(glyph: Glyph, color: QColor, size: int, ratio: float = 1.0) -> QPixmap:
+    """Return ``glyph`` drawn in ``color``, ``size`` pixels square (sharp at ``ratio``)."""
+    family = _icon_font_family()
+    pixels = max(1, round(size * ratio))
+    if family is None:
+        pixmap = QPixmap(pixels, pixels)
+        pixmap.fill(Qt.GlobalColor.transparent)
+    else:
+        pixmap = _render(glyph, family, color, pixels)
+    pixmap.setDevicePixelRatio(ratio)
     return pixmap
